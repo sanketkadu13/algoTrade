@@ -1,0 +1,18 @@
+[Unit]
+Description=Kite MTM Monitor Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/kite
+EnvironmentFile=/opt/kite/.env
+ExecStart=/opt/kite/venv/bin/python /opt/kite/app.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/kite-monitor.log
+StandardError=append:/var/log/kite-monitor.log
+
+[Install]
+WantedBy=multi-user.target

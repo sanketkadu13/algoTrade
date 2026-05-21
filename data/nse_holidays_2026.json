@@ -1,0 +1,24 @@
+{
+  "year": 2026,
+  "note": "VERIFY against https://www.nseindia.com/resources/exchange-communication-holidays before each new year. Lunar/Islamic dates can shift.",
+  "holidays": [
+    { "date": "2026-01-26", "name": "Republic Day" },
+    { "date": "2026-02-15", "name": "Maha Shivratri (Sun — non-trading anyway)" },
+    { "date": "2026-03-04", "name": "Holi" },
+    { "date": "2026-03-21", "name": "Eid-ul-Fitr (tentative)" },
+    { "date": "2026-03-27", "name": "Ram Navami" },
+    { "date": "2026-03-31", "name": "Mahavir Jayanti" },
+    { "date": "2026-04-03", "name": "Good Friday" },
+    { "date": "2026-04-14", "name": "Dr Ambedkar Jayanti" },
+    { "date": "2026-05-01", "name": "Maharashtra Day / Buddha Purnima" },
+    { "date": "2026-05-28", "name": "Eid-ul-Adha (tentative)" },
+    { "date": "2026-08-15", "name": "Independence Day (Sat — non-trading anyway)" },
+    { "date": "2026-09-14", "name": "Ganesh Chaturthi" },
+    { "date": "2026-10-02", "name": "Gandhi Jayanti" },
+    { "date": "2026-10-21", "name": "Dussehra" },
+    { "date": "2026-11-08", "name": "Diwali Laxmi Pujan" },
+    { "date": "2026-11-09", "name": "Diwali Balipratipada" },
+    { "date": "2026-11-24", "name": "Guru Nanak Jayanti" },
+    { "date": "2026-12-25", "name": "Christmas (Fri)" }
+  ]
+}

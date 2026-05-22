@@ -4328,6 +4328,414 @@ def straddle_skip_today_route():
     return jsonify({"ok": True})
 
 
+# ── Calendar Spread (Phase A: monitor + log only, no orders) ──────────────────
+#
+# Tracks (near-month future, far-month future) on selected underlyings. For
+# each tick:
+#   spread        = F_far - F_near
+#   fair_linear   = F_near * carry_rate * days_between_expiries / 365
+#   fair_empirical= rolling 5-trading-day mean of daily-close spread
+#   fair_combined = max(fair_linear, fair_empirical)
+#   deviation     = spread - fair_combined
+#   z_score       = deviation / rolling_5d_std
+#   would_fire_*  = combined trigger (|deviation|>entry_pts AND |z|>entry_z)
+#
+# Logs every tick to data/csv/calspread_<underlying>_YYYYMMDD.csv so we can
+# review "what would've fired" before turning on Phase B (orders).
+
+_CALSPREAD_SETUP_AT       = dtime(9, 16)
+_CALSPREAD_MARKET_OPEN    = dtime(9, 15)
+_CALSPREAD_MARKET_CLOSE   = dtime(15, 30)
+_CALSPREAD_TICK_SLOT_MOD  = 10                   # poll every 10s
+_CALSPREAD_TICK_SLOT_REM  = 5                    # at second 5,15,25,35,45,55 — collides with nothing
+_CALSPREAD_ROLL_WINDOW    = 5                    # trading-day rolling window for empirical fair value
+
+# Underlyings supported in Phase A. Easy to extend later by adding rows here.
+_CALSPREAD_UNDERLYINGS = {
+    "NIFTY": {
+        "label":       "NIFTY",
+        "fut_prefix":  "NIFTY",
+        "lot_size":    65,
+        "exchange":    "NFO",
+    },
+    "BANKNIFTY": {
+        "label":       "BANKNIFTY",
+        "fut_prefix":  "BANKNIFTY",
+        "lot_size":    30,
+        "exchange":    "NFO",
+    },
+}
+
+# Shared config (applies to all underlyings unless per-underlying override).
+_calspread_config = {
+    "carry_rate":              0.065,    # 6.5% repo (configurable from UI later)
+    "entry_pts":               8.0,
+    "entry_z":                 2.5,
+    "exit_band_pts":           2.0,      # exit when |deviation| <= this
+    "sl_z":                    1.0,      # SL when |z| moves by this much AGAINST entry direction
+    "roll_lockout_days":       5,
+    "min_far_book_pts":        1.5,
+    "max_trades_per_day":      1,
+    "max_notional_per_under":  300000,
+    "lots":                    1,
+    "active":                  {u: False for u in _CALSPREAD_UNDERLYINGS},   # per-underlying master switch
+    "paper_mode":              {u: False for u in _CALSPREAD_UNDERLYINGS},   # Phase A doesn't place orders anyway
+}
+
+# Per-underlying live state (built on each trading-day setup).
+_calspread_state: dict = {u: {
+    "session_date":     None,
+    "near_expiry":      None,
+    "far_expiry":       None,
+    "near_symbol":      None, "near_token": None,
+    "far_symbol":       None, "far_token":  None,
+    "days_between":     None,
+    "last_near_ltp":    None,
+    "last_far_ltp":     None,
+    "last_spread":      None,
+    "fair_linear":      None,
+    "fair_empirical":   None,
+    "fair_combined":    None,
+    "deviation":        None,
+    "z_score":          None,
+    "rolling_mean":     None,
+    "rolling_std":      None,
+    "rolling_history":  [],          # last N days' (date, daily_close_spread) for the empirical model
+    "would_fire_long":  False,
+    "would_fire_short": False,
+    "would_fire_count": 0,            # cumulative ticks that fired today (for visibility)
+    "last_error":       None,
+    "lifecycle":        "idle",       # idle | armed | (Phase B will add more)
+} for u in _CALSPREAD_UNDERLYINGS}
+_calspread_lock = threading.Lock()
+
+
+def _calspread_resolve_expiries(underlying: str, today: date | None = None):
+    """Return (near_expiry, far_expiry) — both adjusted for holidays.
+
+    NIFTY/BANKNIFTY monthlies expire on the last Tuesday of each month (per
+    existing _last_tuesday_of_month helper). Near = current month if today is
+    on or before its expiry, else next month. Far = the month after near.
+    """
+    today = today or _now_ist().date()
+    this_exp = _shift_to_trading_day(_last_tuesday_of_month(today.year, today.month))
+    if today <= this_exp:
+        near = this_exp
+        nm_year, nm_month = (today.year, today.month + 1) if today.month < 12 else (today.year + 1, 1)
+        far = _shift_to_trading_day(_last_tuesday_of_month(nm_year, nm_month))
+    else:
+        # Past this month's expiry — roll forward.
+        nm_year, nm_month = (today.year, today.month + 1) if today.month < 12 else (today.year + 1, 1)
+        near = _shift_to_trading_day(_last_tuesday_of_month(nm_year, nm_month))
+        fm_year, fm_month = (nm_year, nm_month + 1) if nm_month < 12 else (nm_year + 1, 1)
+        far  = _shift_to_trading_day(_last_tuesday_of_month(fm_year, fm_month))
+    return near, far
+
+
+def _calspread_instrument_token(symbol: str, exchange: str = "NFO") -> int | None:
+    """Look up a tradingsymbol's instrument_token via kite.instruments()."""
+    try:
+        instruments = kite.instruments(exchange)
+    except Exception as e:
+        print(f"[calspread-token] kite.instruments error: {e}")
+        return None
+    for inst in instruments:
+        if inst.get("tradingsymbol") == symbol:
+            return inst.get("instrument_token")
+    return None
+
+
+def _calspread_fetch_history(near_token: int, far_token: int, days: int) -> list[dict]:
+    """Fetch past `days` of daily-close data for both legs; pair them by date
+    and return [{date, spread}]. Used to seed the empirical fair value."""
+    now = _now_ist()
+    # 2x days of calendar lookback to survive weekends + holidays
+    from_dt = now - timedelta(days=days * 2 + 10)
+    to_dt   = now - timedelta(seconds=1)
+    try:
+        near_bars = kite.historical_data(near_token, from_dt, to_dt, interval="day") or []
+        far_bars  = kite.historical_data(far_token,  from_dt, to_dt, interval="day") or []
+    except Exception as e:
+        print(f"[calspread-history] {e}")
+        return []
+    near_map = {b["date"].strftime("%Y-%m-%d"): b for b in near_bars}
+    far_map  = {b["date"].strftime("%Y-%m-%d"): b for b in far_bars}
+    common = sorted(set(near_map) & set(far_map))
+    out = []
+    for d in common[-days:]:
+        out.append({
+            "date":         d,
+            "near_close":   float(near_map[d]["close"]),
+            "far_close":    float(far_map[d]["close"]),
+            "spread":       float(far_map[d]["close"]) - float(near_map[d]["close"]),
+        })
+    return out
+
+
+def _calspread_setup_underlying(underlying: str) -> bool:
+    """At 09:16 each trading day: resolve near/far expiries, look up tokens,
+    fetch historical for empirical fair value. Idempotent — safe to call
+    multiple times in a day (re-resolves)."""
+    cfg = _CALSPREAD_UNDERLYINGS.get(underlying)
+    if not cfg:
+        return False
+    today = _now_ist().date()
+    near_exp, far_exp = _calspread_resolve_expiries(underlying, today)
+    near_sym = _future_symbol(cfg["fut_prefix"], near_exp)
+    far_sym  = _future_symbol(cfg["fut_prefix"], far_exp)
+    near_tok = _calspread_instrument_token(near_sym, cfg["exchange"])
+    far_tok  = _calspread_instrument_token(far_sym, cfg["exchange"])
+    if not near_tok or not far_tok:
+        with _calspread_lock:
+            _calspread_state[underlying]["last_error"] = f"token lookup failed: {near_sym}/{far_sym}"
+        return False
+
+    days_between = (far_exp - near_exp).days
+
+    # Historical for empirical mean + std
+    hist = _calspread_fetch_history(near_tok, far_tok, _CALSPREAD_ROLL_WINDOW)
+    if hist:
+        spreads = [h["spread"] for h in hist]
+        mean    = sum(spreads) / len(spreads)
+        if len(spreads) >= 2:
+            var = sum((s - mean) ** 2 for s in spreads) / (len(spreads) - 1)
+            std = var ** 0.5
+        else:
+            std = 0.0
+    else:
+        mean = None
+        std  = None
+
+    with _calspread_lock:
+        s = _calspread_state[underlying]
+        s.update({
+            "session_date":     today.isoformat(),
+            "near_expiry":      near_exp.isoformat(),
+            "far_expiry":       far_exp.isoformat(),
+            "near_symbol":      near_sym, "near_token": near_tok,
+            "far_symbol":       far_sym,  "far_token":  far_tok,
+            "days_between":     days_between,
+            "rolling_history":  hist,
+            "rolling_mean":     mean,
+            "rolling_std":      std,
+            "last_error":       None,
+            "lifecycle":        "armed",
+        })
+    print(f"[calspread] {underlying} setup: near={near_sym} ({near_exp}) "
+          f"far={far_sym} ({far_exp}) days_between={days_between} "
+          f"hist_n={len(hist)} mean={mean and round(mean, 2)} std={std and round(std, 2)}")
+    return True
+
+
+def _calspread_compute_metrics(underlying: str, near_ltp: float, far_ltp: float):
+    """Update spread / fair / deviation / z / would-fire flags for one tick."""
+    cfg_global = _calspread_config
+    with _calspread_lock:
+        s = _calspread_state[underlying]
+        rolling_mean = s.get("rolling_mean")
+        rolling_std  = s.get("rolling_std")
+        days_between = s.get("days_between") or 30
+
+    spread = round(far_ltp - near_ltp, 2)
+
+    # Linear fair value (cost-of-carry, simple)
+    carry_rate = float(cfg_global.get("carry_rate") or 0.065)
+    fair_linear = round(near_ltp * carry_rate * days_between / 365.0, 2)
+
+    # Empirical fair value: rolling mean (or fall back to linear if no history)
+    fair_empirical = rolling_mean if rolling_mean is not None else fair_linear
+
+    # Combined: max of the two — most conservative reference point
+    fair_combined = max(fair_linear, fair_empirical)
+    deviation = round(spread - fair_combined, 2)
+
+    # z-score from empirical history
+    if rolling_std and rolling_std > 0:
+        z = round((spread - (rolling_mean or 0)) / rolling_std, 2)
+    else:
+        z = None
+
+    # Would-fire (dual trigger): |deviation| > entry_pts AND |z| > entry_z
+    entry_pts = float(cfg_global.get("entry_pts") or 8.0)
+    entry_z   = float(cfg_global.get("entry_z")   or 2.5)
+    abs_dev = abs(deviation)
+    abs_z   = abs(z) if z is not None else 0.0
+    long_side  = deviation < 0 and abs_dev > entry_pts and abs_z > entry_z   # buy spread (sell near, buy far)
+    short_side = deviation > 0 and abs_dev > entry_pts and abs_z > entry_z   # sell spread (buy near, sell far)
+
+    with _calspread_lock:
+        s = _calspread_state[underlying]
+        s.update({
+            "last_near_ltp":    near_ltp,
+            "last_far_ltp":     far_ltp,
+            "last_spread":      spread,
+            "fair_linear":      fair_linear,
+            "fair_empirical":   round(fair_empirical, 2) if fair_empirical is not None else None,
+            "fair_combined":    round(fair_combined, 2),
+            "deviation":        deviation,
+            "z_score":          z,
+            "would_fire_long":  long_side,
+            "would_fire_short": short_side,
+        })
+        if long_side or short_side:
+            s["would_fire_count"] = (s.get("would_fire_count") or 0) + 1
+
+
+def _calspread_csv_log(underlying: str):
+    """Append a row to data/csv/calspread_<underlying>_YYYYMMDD.csv."""
+    try:
+        d = _now_ist().strftime("%Y%m%d")
+        path = os.path.join(_CSV_DIR, f"calspread_{underlying}_{d}.csv")
+        write_header = not os.path.exists(path)
+        with _calspread_lock:
+            s = dict(_calspread_state[underlying])
+        with open(path, "a", newline="") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow([
+                    "ts", "underlying", "near_sym", "far_sym",
+                    "near_ltp", "far_ltp", "spread",
+                    "fair_linear", "fair_empirical", "fair_combined",
+                    "deviation", "z_score",
+                    "would_fire_long", "would_fire_short",
+                ])
+            w.writerow([
+                _now_ist().isoformat(),
+                underlying,
+                s.get("near_symbol"), s.get("far_symbol"),
+                s.get("last_near_ltp"), s.get("last_far_ltp"), s.get("last_spread"),
+                s.get("fair_linear"), s.get("fair_empirical"), s.get("fair_combined"),
+                s.get("deviation"), s.get("z_score"),
+                s.get("would_fire_long"), s.get("would_fire_short"),
+            ])
+    except Exception as e:
+        print(f"[calspread-csv] {e}")
+
+
+def _calspread_morning_setup_loop():
+    """Once each trading day at >= 09:16 IST, run setup for every underlying
+    that doesn't already have today's session_date. Idempotent."""
+    while True:
+        try:
+            now = _now_ist()
+            today = now.date().isoformat()
+            if _is_trading_day(now.date()) and now.time() >= _CALSPREAD_SETUP_AT and now.time() < _CALSPREAD_MARKET_CLOSE:
+                for underlying in _CALSPREAD_UNDERLYINGS:
+                    with _calspread_lock:
+                        done = _calspread_state[underlying].get("session_date") == today
+                    if not done:
+                        _calspread_setup_underlying(underlying)
+        except Exception as e:
+            print(f"[calspread-morning] {e}")
+        time.sleep(30)
+
+
+def _calspread_tick_loop():
+    """Polls near + far futures every 10s during market hours. Computes
+    metrics, logs to CSV. Phase A: no orders, no telegram alerts."""
+    while True:
+        try:
+            now = _now_ist()
+            if (_is_trading_day(now.date())
+                and _CALSPREAD_MARKET_OPEN <= now.time() < _CALSPREAD_MARKET_CLOSE
+                and now.second % _CALSPREAD_TICK_SLOT_MOD == _CALSPREAD_TICK_SLOT_REM):
+                _calspread_poll_all_underlyings()
+        except Exception as e:
+            print(f"[calspread-tick] {e}")
+        time.sleep(1)
+
+
+def _calspread_poll_all_underlyings():
+    """One pass: batch kite.quote() for every underlying that's set up today."""
+    today_iso = _now_ist().date().isoformat()
+    with _calspread_lock:
+        active_states = {
+            u: _calspread_state[u]
+            for u in _CALSPREAD_UNDERLYINGS
+            if _calspread_state[u].get("session_date") == today_iso
+            and _calspread_state[u].get("near_token")
+            and _calspread_state[u].get("far_token")
+        }
+    if not active_states:
+        return
+    tokens = []
+    for u, s in active_states.items():
+        tokens.append(s["near_token"])
+        tokens.append(s["far_token"])
+    try:
+        q = kite.quote(tokens)
+    except Exception as e:
+        with _calspread_lock:
+            for u in active_states:
+                _calspread_state[u]["last_error"] = f"quote error: {e}"
+        return
+    for u, s in active_states.items():
+        near_q = q.get(str(s["near_token"])) or {}
+        far_q  = q.get(str(s["far_token"]))  or {}
+        near_ltp = float(near_q.get("last_price") or 0)
+        far_ltp  = float(far_q.get("last_price")  or 0)
+        if near_ltp <= 0 or far_ltp <= 0:
+            continue
+        _calspread_compute_metrics(u, near_ltp, far_ltp)
+        _calspread_csv_log(u)
+    broadcast("calspread_update")
+
+
+# Boot threads
+threading.Thread(target=_calspread_morning_setup_loop, daemon=True).start()
+threading.Thread(target=_calspread_tick_loop,          daemon=True).start()
+
+
+# ── Calendar spread routes (Phase A: read-only) ──────────────────────────────
+@app.route("/calspread", methods=["GET"])
+def calspread_state_route():
+    """Returns config + per-underlying state. Frontend polls this."""
+    with _calspread_lock:
+        states = {u: dict(_calspread_state[u]) for u in _CALSPREAD_UNDERLYINGS}
+    return jsonify({
+        "ok":            True,
+        "config":        dict(_calspread_config),
+        "underlyings":   {u: dict(meta) for u, meta in _CALSPREAD_UNDERLYINGS.items()},
+        "states":        states,
+        "roll_window":   _CALSPREAD_ROLL_WINDOW,
+    })
+
+
+@app.route("/calspread/config", methods=["POST"])
+def calspread_config_route():
+    """Update shared config. Phase A only tunes thresholds; entry/exit
+    decisions are not acted on until Phase B."""
+    d = request.json or {}
+    for k in ("carry_rate", "entry_pts", "entry_z", "exit_band_pts",
+              "sl_z", "min_far_book_pts", "max_notional_per_under"):
+        if k in d:
+            try: _calspread_config[k] = float(d[k])
+            except Exception: pass
+    for k in ("roll_lockout_days", "max_trades_per_day", "lots"):
+        if k in d:
+            try: _calspread_config[k] = int(d[k])
+            except Exception: pass
+    if "active" in d and isinstance(d["active"], dict):
+        for u, v in d["active"].items():
+            if u in _CALSPREAD_UNDERLYINGS:
+                _calspread_config["active"][u] = bool(v)
+    return jsonify({"ok": True, "config": dict(_calspread_config)})
+
+
+@app.route("/calspread/setup/<underlying>", methods=["POST"])
+def calspread_force_setup_route(underlying: str):
+    """Force-run setup for one underlying (useful for testing without waiting
+    for the 09:16 morning loop)."""
+    if underlying not in _CALSPREAD_UNDERLYINGS:
+        return jsonify({"ok": False, "error": "unknown underlying"}), 404
+    ok = _calspread_setup_underlying(underlying)
+    if not ok:
+        with _calspread_lock:
+            err = _calspread_state[underlying].get("last_error")
+        return jsonify({"ok": False, "error": err or "setup failed"}), 500
+    return jsonify({"ok": True})
+
+
 # ── Admin / onboarding ────────────────────────────────────────────────────────
 # Lets the primary user (ADMIN_ENABLED=true in their .env) generate invite
 # links, list active users, and remove users. Onboarding is handled by a

@@ -5094,6 +5094,337 @@ def interarb_config_route():
     return jsonify({"ok": True, "config": dict(_interarb_config)})
 
 
+# ── Commodity Lot-Size Arb (MCX big-vs-mini same expiry) — Phase A ────────────
+#
+# For each configured commodity pair, finds the NEAR-MONTH contract for both
+# the big and the mini variant on MCX, subscribes to live depth on both via
+# the existing KiteTicker (shared with the inter-exchange scanner), and every
+# second computes whether selling one and buying the other yields net edge
+# after the lot-balanced commodity intraday cost.
+#
+# Key wrinkle vs equity arb: lot sizes differ, so the minimum balanced trade
+# is the LCM of (big_lot, mini_lot) underlying units. For CRUDE that's 100 bbl
+# = 1 big + 10 minis. We compute fill_qty in "physical units" then derive lots
+# on each side.
+
+_COMMARB_PAIRS_PATH = os.path.join(CODE_DIR, "data", "commarb_pairs.json")
+
+_commarb_config = {
+    "min_net_pct":          0.05,    # filter
+    "max_lots_big":         5,       # safety cap on big-side lots per opportunity
+    "paper_mode":           True,
+    "active":               False,
+}
+
+_commarb_pairs:  list = []           # list of pair dicts (from JSON, enriched at boot)
+_commarb_opps:   list = []
+_commarb_last_compute_at: str = ""
+_commarb_status: dict = {
+    "resolved": 0, "skipped": [], "boot_error": None,
+}
+
+
+def _commarb_match_prefix(sym: str, prefix: str) -> bool:
+    """True if sym starts with prefix AND the next char is a digit (year).
+    Distinguishes 'CRUDEOIL26JUNFUT' (matches 'CRUDEOIL') from
+    'CRUDEOILM26JUNFUT' (does NOT match 'CRUDEOIL', matches 'CRUDEOILM')."""
+    if not sym.startswith(prefix):
+        return False
+    rest = sym[len(prefix):]
+    return bool(rest) and rest[0].isdigit()
+
+
+def _commarb_find_near_month(mcx_instruments: list, prefix: str) -> dict | None:
+    """Among MCX FUT instruments whose tradingsymbol matches prefix+YYMMM+FUT,
+    return the one with the smallest still-in-the-future expiry."""
+    today = _now_ist().date()
+    candidates = []
+    for i in mcx_instruments:
+        sym = i.get("tradingsymbol", "")
+        if not _commarb_match_prefix(sym, prefix):
+            continue
+        if i.get("instrument_type") != "FUT":
+            continue
+        exp = i.get("expiry")
+        if not exp:
+            continue
+        # exp may be a date or datetime
+        exp_date = exp if isinstance(exp, date) else getattr(exp, "date", lambda: exp)()
+        if exp_date < today:
+            continue
+        candidates.append((exp_date, i))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][1]
+
+
+def _commarb_resolve_pairs():
+    """Load JSON, find near-month for each pair on MCX, store enriched entries."""
+    global _commarb_pairs
+    try:
+        with open(_COMMARB_PAIRS_PATH, "r") as f:
+            raw = json.load(f)
+        pair_defs = raw.get("pairs") or []
+    except Exception as e:
+        _commarb_status["boot_error"] = f"pairs file: {e}"
+        return
+    try:
+        mcx = kite.instruments("MCX")
+    except Exception as e:
+        _commarb_status["boot_error"] = f"kite.instruments(MCX): {e}"
+        return
+    resolved = []
+    skipped  = []
+    for p in pair_defs:
+        big  = _commarb_find_near_month(mcx, p["big_prefix"])
+        mini = _commarb_find_near_month(mcx, p["mini_prefix"])
+        if not big or not mini:
+            skipped.append({"id": p.get("id"), "reason": f"could not resolve {p['big_prefix']}/{p['mini_prefix']}"})
+            continue
+        # Sanity-check lot sizes vs what kite reports (catches drift if exchange changes lot sizes)
+        big_lot_live  = int(big.get("lot_size") or 0)
+        mini_lot_live = int(mini.get("lot_size") or 0)
+        if big_lot_live and big_lot_live != p["big_lot_size"]:
+            print(f"[commarb] WARN {p['id']}: big_lot JSON={p['big_lot_size']} kite={big_lot_live}; using kite value")
+            p["big_lot_size"] = big_lot_live
+        if mini_lot_live and mini_lot_live != p["mini_lot_size"]:
+            print(f"[commarb] WARN {p['id']}: mini_lot JSON={p['mini_lot_size']} kite={mini_lot_live}; using kite value")
+            p["mini_lot_size"] = mini_lot_live
+        resolved.append({
+            **p,
+            "big_symbol":      big["tradingsymbol"],
+            "big_token":       big["instrument_token"],
+            "big_expiry":      str(big.get("expiry")),
+            "mini_symbol":     mini["tradingsymbol"],
+            "mini_token":      mini["instrument_token"],
+            "mini_expiry":     str(mini.get("expiry")),
+        })
+    _commarb_pairs = resolved
+    _commarb_status["resolved"] = len(resolved)
+    _commarb_status["skipped"]  = skipped
+    print(f"[commarb-resolve] resolved {len(resolved)} pairs; skipped {len(skipped)}")
+    for r in resolved:
+        print(f"  {r['id']}: {r['big_symbol']} (lot {r['big_lot_size']}) vs {r['mini_symbol']} (lot {r['mini_lot_size']})")
+
+
+def _commarb_subscribe_via_shared_ws():
+    """Add commarb tokens to the existing _interarb_ticker subscription.
+    If the ticker isn't connected yet, we just wait — the interarb on_connect
+    fires after instruments() finishes and would have to be coordinated. To
+    avoid race conditions, poll until ticker is ready, then subscribe."""
+    if not _commarb_pairs:
+        return
+    tokens = []
+    for p in _commarb_pairs:
+        tokens.append(p["big_token"])
+        tokens.append(p["mini_token"])
+    # Wait until interarb ticker has connected (best-effort, max 30s)
+    for _ in range(60):
+        if _interarb_ticker is not None and _interarb_status.get("ws_state") == "connected":
+            break
+        time.sleep(0.5)
+    if _interarb_ticker is None:
+        _commarb_status["boot_error"] = "shared kite ticker not available"
+        return
+    try:
+        # Subscribe in one batch (only 4 tokens)
+        _interarb_ticker.subscribe(tokens)
+        _interarb_ticker.set_mode(_interarb_ticker.MODE_FULL, tokens)
+        print(f"[commarb] subscribed {len(tokens)} commodity tokens via shared WS")
+    except Exception as e:
+        _commarb_status["boot_error"] = f"subscribe failed: {e}"
+
+
+# ── Zerodha commodity intraday MIS round-trip cost ──────────────────────────
+def _commarb_intraday_cost(big_notional: float, mini_notional: float,
+                           big_lots: int, mini_lots: int,
+                           sell_is_big: bool, is_non_agri: bool = True) -> dict:
+    """Per Zerodha commodity intraday MIS charges. Both legs are intraday so
+    no delivery STT. Brokerage is per-leg with the ₹20 cap. Non-agri commodities
+    pay CTT 0.01% on sell side."""
+    if big_notional <= 0 or mini_notional <= 0 or big_lots <= 0 or mini_lots <= 0:
+        return {"total": 0.0}
+    sell_notional = big_notional if sell_is_big else mini_notional
+    buy_notional  = mini_notional if sell_is_big else big_notional
+    total_value   = big_notional + mini_notional
+    # STT 0.01% on sell side (commodity futures)
+    stt  = sell_notional * 0.0001
+    # CTT 0.01% on sell side (non-agri)
+    ctt  = sell_notional * 0.0001 if is_non_agri else 0.0
+    # Exchange transaction (MCX ~0.0026% per side; on total turnover that's ~0.0026% × total)
+    exch = total_value * 0.000026
+    # SEBI fee
+    sebi = total_value * 0.000001
+    # Stamp duty 0.002% on buy side
+    stamp = buy_notional * 0.00002
+    # Brokerage: ₹20 or 0.03% per leg (whichever lower) — separately per big and mini
+    big_per_lot_notional  = big_notional / big_lots
+    mini_per_lot_notional = mini_notional / mini_lots
+    big_brokerage  = big_lots  * min(20.0, big_per_lot_notional  * 0.0003)
+    mini_brokerage = mini_lots * min(20.0, mini_per_lot_notional * 0.0003)
+    brokerage = big_brokerage + mini_brokerage
+    # GST 18% on (brokerage + exch + sebi)
+    gst = (brokerage + exch + sebi) * 0.18
+    total = stt + ctt + exch + sebi + stamp + brokerage + gst
+    return {
+        "stt":       round(stt, 2),
+        "ctt":       round(ctt, 2),
+        "exch":      round(exch, 2),
+        "sebi":      round(sebi, 2),
+        "stamp":     round(stamp, 2),
+        "brokerage": round(brokerage, 2),
+        "gst":       round(gst, 2),
+        "total":     round(total, 2),
+    }
+
+
+def _commarb_compute_opps() -> list:
+    """Build one opportunity row per pair × direction (4 rows for 2 pairs).
+    Rows with no edge / no liquidity get filtered."""
+    cfg = _commarb_config
+    cap_lots = int(cfg.get("max_lots_big") or 5)
+    min_net_pct = float(cfg.get("min_net_pct") or 0.0)
+    out = []
+    with _interarb_depth_lock:
+        depth = dict(_interarb_depth)
+    for p in _commarb_pairs:
+        b = depth.get(p["big_token"])  or {}
+        m = depth.get(p["mini_token"]) or {}
+        big_bid     = b.get("bid")     or 0
+        big_ask     = b.get("ask")     or 0
+        big_bid_qty = b.get("bid_qty") or 0   # in physical units (barrels / mmBtu)
+        big_ask_qty = b.get("ask_qty") or 0
+        mini_bid     = m.get("bid")     or 0
+        mini_ask     = m.get("ask")     or 0
+        mini_bid_qty = m.get("bid_qty") or 0
+        mini_ask_qty = m.get("ask_qty") or 0
+        big_ltp     = b.get("ltp")     or 0
+        mini_ltp    = m.get("ltp")     or 0
+
+        big_lot  = int(p["big_lot_size"])
+        mini_lot = int(p["mini_lot_size"])
+        # LCM of lot sizes — the smallest physical trade unit (in barrels/mmBtu)
+        from math import gcd as _gcd
+        lcm_units = (big_lot * mini_lot) // _gcd(big_lot, mini_lot)
+
+        # ── Direction 1: SELL big, BUY mini  (big > mini in ₹/unit)
+        # ── Direction 2: SELL mini, BUY big (mini > big in ₹/unit)
+        for direction, sell_px, sell_qty, buy_px, buy_qty, sell_is_big in (
+            ("sell_big_buy_mini",   big_bid,  big_bid_qty,  mini_ask, mini_ask_qty, True),
+            ("sell_mini_buy_big",   mini_bid, mini_bid_qty, big_ask,  big_ask_qty,  False),
+        ):
+            if sell_px <= 0 or buy_px <= 0 or sell_qty <= 0 or buy_qty <= 0:
+                continue
+            edge_per_unit = sell_px - buy_px
+            if edge_per_unit <= 0:
+                continue
+            # max balanced physical units = min of both sides, rounded down to LCM
+            avail_units = min(sell_qty, buy_qty)
+            avail_units_balanced = (avail_units // lcm_units) * lcm_units
+            if avail_units_balanced <= 0:
+                continue
+            # Cap to max_lots_big (in physical units)
+            cap_units = cap_lots * big_lot
+            traded_units = min(avail_units_balanced, cap_units)
+            if traded_units <= 0:
+                continue
+            big_lots_traded  = traded_units // big_lot
+            mini_lots_traded = traded_units // mini_lot
+            big_notional  = big_ltp  * (big_lots_traded  * big_lot)  if big_ltp  else (sell_px if sell_is_big else buy_px) * traded_units
+            mini_notional = mini_ltp * (mini_lots_traded * mini_lot) if mini_ltp else (sell_px if not sell_is_big else buy_px) * traded_units
+            # Actually compute each leg's notional at its execution price
+            big_exec_px  = sell_px if sell_is_big else buy_px
+            mini_exec_px = sell_px if not sell_is_big else buy_px
+            big_notional  = big_exec_px  * (big_lots_traded  * big_lot)
+            mini_notional = mini_exec_px * (mini_lots_traded * mini_lot)
+
+            gross = edge_per_unit * traded_units
+            cost  = _commarb_intraday_cost(big_notional, mini_notional,
+                                           big_lots_traded, mini_lots_traded,
+                                           sell_is_big, bool(p.get("is_non_agri", True)))
+            net = gross - cost["total"]
+            avg_notional = (big_notional + mini_notional) / 2.0
+            net_pct = (net / avg_notional * 100) if avg_notional > 0 else 0.0
+            if net_pct < min_net_pct:
+                continue
+            out.append({
+                "pair_id":          p["id"],
+                "label":            p["label"],
+                "direction":        direction,
+                "big_symbol":       p["big_symbol"],
+                "mini_symbol":      p["mini_symbol"],
+                "sell_price":       round(sell_px, 2),
+                "buy_price":        round(buy_px, 2),
+                "edge_per_unit":    round(edge_per_unit, 2),
+                "unit":             p.get("unit", ""),
+                "traded_units":     traded_units,
+                "big_lots":         big_lots_traded,
+                "mini_lots":        mini_lots_traded,
+                "big_notional":     round(big_notional, 0),
+                "mini_notional":    round(mini_notional, 0),
+                "gross_pnl":        round(gross, 0),
+                "cost_total":       cost["total"],
+                "net_pnl":          round(net, 0),
+                "net_pct":          round(net_pct, 4),
+                "big_bid":          big_bid,  "big_ask":  big_ask,
+                "big_bid_qty":      big_bid_qty,  "big_ask_qty":  big_ask_qty,
+                "mini_bid":         mini_bid, "mini_ask": mini_ask,
+                "mini_bid_qty":     mini_bid_qty, "mini_ask_qty": mini_ask_qty,
+            })
+    out.sort(key=lambda r: -r["net_pct"])
+    return out
+
+
+def _commarb_compute_loop():
+    global _commarb_opps, _commarb_last_compute_at
+    while True:
+        try:
+            opps = _commarb_compute_opps()
+            _commarb_opps = opps
+            _commarb_last_compute_at = _now_ist().isoformat()
+        except Exception as e:
+            print(f"[commarb-compute] {e}")
+        time.sleep(1)
+
+
+def _commarb_boot():
+    _commarb_resolve_pairs()
+    if not _commarb_pairs:
+        return
+    _commarb_subscribe_via_shared_ws()
+    threading.Thread(target=_commarb_compute_loop, daemon=True).start()
+
+threading.Thread(target=_commarb_boot, daemon=True).start()
+
+
+# ── Routes ──────────────────────────────────────────────────────────────────
+@app.route("/commarb", methods=["GET"])
+def commarb_route():
+    return jsonify({
+        "ok":             True,
+        "config":         dict(_commarb_config),
+        "status":         dict(_commarb_status),
+        "pairs":          list(_commarb_pairs),
+        "opportunities":  list(_commarb_opps),
+        "last_compute_at": _commarb_last_compute_at,
+    })
+
+
+@app.route("/commarb/config", methods=["POST"])
+def commarb_config_route():
+    d = request.json or {}
+    if "min_net_pct" in d:
+        try: _commarb_config["min_net_pct"] = float(d["min_net_pct"])
+        except Exception: pass
+    if "max_lots_big" in d:
+        try: _commarb_config["max_lots_big"] = int(d["max_lots_big"])
+        except Exception: pass
+    if "paper_mode" in d: _commarb_config["paper_mode"] = bool(d["paper_mode"])
+    if "active" in d:     _commarb_config["active"]     = bool(d["active"])
+    return jsonify({"ok": True, "config": dict(_commarb_config)})
+
+
 # ── Admin / onboarding ────────────────────────────────────────────────────────
 # Lets the primary user (ADMIN_ENABLED=true in their .env) generate invite
 # links, list active users, and remove users. Onboarding is handled by a

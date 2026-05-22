@@ -673,6 +673,7 @@
       <button id="vt-auctions"   class="vt-btn"           onclick="switchView('auctions')">🔨 Auctions</button>
       <button id="vt-straddle"   class="vt-btn"           onclick="switchView('straddle')">🎯 Straddle</button>
       <button id="vt-interarb"   class="vt-btn"           onclick="switchView('interarb')">🔁 NSE↔BSE</button>
+      <button id="vt-commarb"    class="vt-btn"           onclick="switchView('commarb')">⛽ Comm Lot</button>
       <button id="vt-admin"      class="vt-btn"           onclick="switchView('admin')" style="display:none">👥 Admin</button>
     </div>
 
@@ -1407,6 +1408,86 @@
 
   </div>
 
+  <!-- ═══════════════════════════════ COMMODITY LOT VIEW ══════════════════════ -->
+  <div id="view-commarb" style="display:none">
+
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Commodity Lot-Size Arbitrage (MCX big ↔ mini, same expiry) <span id="ca-count" style="color:var(--muted);font-weight:normal">— 0 opps</span></span>
+        <div style="display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:11px;color:var(--muted)">
+          <span id="ca-resolved">pairs: 0</span>
+          <span>·</span>
+          <span id="ca-updated">last update: —</span>
+        </div>
+      </div>
+      <div id="ca-error" style="display:none;background:rgba(248,81,73,.08);border:1px solid var(--red);border-radius:4px;padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--red-hi);margin-top:8px"></div>
+    </div>
+
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title">Resolved Contracts</div>
+      <div id="ca-pairs" style="font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.8">Loading…</div>
+    </div>
+
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title">Filters &amp; Mode</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;font-family:var(--mono);font-size:12px;align-items:end">
+        <label style="display:flex;flex-direction:column;gap:4px">
+          Min net % to show
+          <input type="number" id="ca-min-pct" step="0.01" min="-5" value="0.05" oninput="this._touched=true">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          Max big-side lots
+          <input type="number" id="ca-max-lots" step="1" min="1" value="5" oninput="this._touched=true">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;align-self:end">
+          <span><input type="checkbox" id="ca-paper" checked oninput="this._touched=true"> Paper mode</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;align-self:end">
+          <span><input type="checkbox" id="ca-active" oninput="this._touched=true"> Master switch (Phase B)</span>
+        </label>
+        <button class="btn-save" onclick="saveCommarbConfig()" style="align-self:end;border-color:var(--green);color:var(--green-hi)">Save</button>
+      </div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:10px;line-height:1.6">
+        ⚠ Phase A is read-only. Trade size is auto-balanced to the LCM of the two lot sizes (e.g. 100 bbl for crude = 1 big + 10 minis minimum).
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title">Live Opportunities</div>
+      <div style="overflow-x:auto">
+        <table class="arb-table" id="ca-table" style="min-width:1100px">
+          <thead>
+            <tr style="font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">
+              <th style="text-align:left">Pair</th>
+              <th style="text-align:center">Direction</th>
+              <th style="text-align:right">Sell @ / Buy @</th>
+              <th style="text-align:right">Edge /unit</th>
+              <th style="text-align:right">Trade size<br>(units · lots)</th>
+              <th style="text-align:right">Big leg ₹</th>
+              <th style="text-align:right">Mini leg ₹</th>
+              <th style="text-align:right">Gross ₹</th>
+              <th style="text-align:right">Cost ₹</th>
+              <th style="text-align:right">Net ₹</th>
+              <th style="text-align:right">Net %</th>
+            </tr>
+          </thead>
+          <tbody id="ca-tbody"></tbody>
+        </table>
+      </div>
+      <div id="ca-empty" style="font-family:var(--mono);font-size:12px;color:var(--dim);text-align:center;padding:20px 0">
+        No opportunities above the threshold yet.
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:0;background:rgba(227,179,65,.05);border-color:var(--orange)">
+      <div class="panel-title" style="color:var(--orange)">⚠ Reality check</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.7">
+        <strong>MCX commodity lot-arb has the same headwinds as the equity scanner</strong> — HFTs monitor big/mini spreads continuously. Mini contracts are less liquid; the top-of-book qty often only supports the minimum LCM trade. Per-leg brokerage of ₹20 on 11 legs (for crude) plus CTT 0.01% means break-even spread is around ₹4 per barrel. Use this to spot occasional fleeting opportunities; don't expect a steady stream.
+      </div>
+    </div>
+
+  </div>
+
   <!-- ═══════════════════════════════ ADMIN VIEW ════════════════════════════════ -->
   <!-- Only ever shown when /admin/state returns 200 (i.e., this instance has ADMIN_ENABLED=true) -->
   <div id="view-admin" style="display:none">
@@ -1778,6 +1859,7 @@
     document.getElementById('view-auctions').style.display   = (v === 'auctions')   ? '' : 'none';
     document.getElementById('view-straddle').style.display    = (v === 'straddle')   ? '' : 'none';
     document.getElementById('view-interarb').style.display    = (v === 'interarb')   ? '' : 'none';
+    document.getElementById('view-commarb').style.display     = (v === 'commarb')    ? '' : 'none';
     document.getElementById('view-admin').style.display       = (v === 'admin')      ? '' : 'none';
     document.getElementById('vt-strategies').classList.toggle('vt-active', v === 'strategies');
     document.getElementById('vt-scheduled').classList.toggle('vt-active', v === 'scheduled');
@@ -1785,6 +1867,7 @@
     document.getElementById('vt-auctions').classList.toggle('vt-active', v === 'auctions');
     document.getElementById('vt-straddle').classList.toggle('vt-active', v === 'straddle');
     document.getElementById('vt-interarb').classList.toggle('vt-active', v === 'interarb');
+    document.getElementById('vt-commarb').classList.toggle('vt-active', v === 'commarb');
     document.getElementById('vt-admin').classList.toggle('vt-active', v === 'admin');
     // Re-render tabs with new filter
     if (lastData?.strategies) renderTabs(lastData.strategies, lastData.strategy_order || []);
@@ -1808,6 +1891,9 @@
     }
     if (v === 'interarb') {
       loadInterarb();
+    }
+    if (v === 'commarb') {
+      loadCommarb();
     }
     if (v === 'admin') {
       loadAdmin();
@@ -2365,6 +2451,100 @@
   // 1Hz refresh while the view is open — matches the server's compute cadence
   setInterval(() => {
     if (currentView === 'interarb') loadInterarb();
+  }, 1000);
+
+  // ── Commodity Lot-Size Arb ──────────────────────────────────────────────
+  async function loadCommarb() {
+    try {
+      const r = await fetch('/commarb');
+      if (!r.ok) return;
+      renderCommarb(await r.json());
+    } catch (e) {}
+  }
+
+  function renderCommarb(d) {
+    const cfg = d.config || {};
+    const status = d.status || {};
+    const pairs = d.pairs || [];
+    const opps = d.opportunities || [];
+
+    // Config inputs
+    const set = (id, v) => { const e = document.getElementById(id); if (e && !e._touched && v !== undefined && v !== null) e.value = v; };
+    set('ca-min-pct', cfg.min_net_pct);
+    set('ca-max-lots', cfg.max_lots_big);
+    const paper = document.getElementById('ca-paper');
+    const active = document.getElementById('ca-active');
+    if (paper && !paper._touched)   paper.checked  = !!cfg.paper_mode;
+    if (active && !active._touched) active.checked = !!cfg.active;
+
+    // Header strip
+    document.getElementById('ca-resolved').textContent = `pairs: ${status.resolved || 0}`;
+    document.getElementById('ca-updated').textContent = 'last update: ' + (d.last_compute_at ? d.last_compute_at.slice(11, 19) : '—');
+    document.getElementById('ca-count').textContent = `— ${opps.length} opps`;
+
+    const errEl = document.getElementById('ca-error');
+    if (status.boot_error) { errEl.textContent = '⚠ ' + status.boot_error; errEl.style.display = ''; }
+    else                   { errEl.style.display = 'none'; }
+
+    // Resolved pairs panel
+    const pairsEl = document.getElementById('ca-pairs');
+    if (!pairs.length) {
+      pairsEl.innerHTML = '<span style="color:var(--dim)">No pairs resolved yet — waiting for MCX instruments fetch.</span>';
+    } else {
+      pairsEl.innerHTML = pairs.map(p => {
+        return `<div><strong>${p.label}</strong> &nbsp;·&nbsp;
+          ${p.big_symbol} <span style="color:var(--dim)">(lot ${p.big_lot_size} ${p.unit})</span>
+          &nbsp;↔&nbsp;
+          ${p.mini_symbol} <span style="color:var(--dim)">(lot ${p.mini_lot_size} ${p.unit})</span>
+          &nbsp;·&nbsp; <span style="color:var(--dim)">expiry ${(p.big_expiry || '').slice(0,10)}</span>
+        </div>`;
+      }).join('');
+    }
+
+    // Opportunities table
+    const tbody = document.getElementById('ca-tbody');
+    const empty = document.getElementById('ca-empty');
+    if (!opps.length) {
+      tbody.innerHTML = '';
+      empty.style.display = '';
+      return;
+    }
+    empty.style.display = 'none';
+    tbody.innerHTML = opps.map(o => {
+      const netColor = o.net_pct >= 0.10 ? 'var(--green-hi)' : (o.net_pct >= 0.05 ? 'var(--orange)' : 'var(--muted)');
+      const dirLabel = o.direction === 'sell_big_buy_mini' ? `sell ${o.big_symbol} → buy ${o.mini_symbol}` : `sell ${o.mini_symbol} → buy ${o.big_symbol}`;
+      return `<tr style="font-family:var(--mono);font-size:12px">
+        <td><strong>${o.label}</strong><br><span style="color:var(--dim);font-size:10px">${o.pair_id}</span></td>
+        <td style="text-align:center;color:var(--dim);font-size:11px">${dirLabel}</td>
+        <td style="text-align:right">₹${o.sell_price.toFixed(2)}<br><span style="color:var(--dim);font-size:10px">₹${o.buy_price.toFixed(2)}</span></td>
+        <td style="text-align:right">${o.edge_per_unit.toFixed(2)}<br><span style="color:var(--dim);font-size:10px">/${o.unit}</span></td>
+        <td style="text-align:right">${o.traded_units} ${o.unit}<br><span style="color:var(--dim);font-size:10px">${o.big_lots}× big · ${o.mini_lots}× mini</span></td>
+        <td style="text-align:right;color:var(--dim)">${(o.big_notional/1e5).toFixed(2)}L</td>
+        <td style="text-align:right;color:var(--dim)">${(o.mini_notional/1e5).toFixed(2)}L</td>
+        <td style="text-align:right">₹${o.gross_pnl.toFixed(0)}</td>
+        <td style="text-align:right;color:var(--dim)">₹${o.cost_total.toFixed(0)}</td>
+        <td style="text-align:right;color:${netColor};font-weight:700">₹${o.net_pnl.toFixed(0)}</td>
+        <td style="text-align:right;color:${netColor};font-weight:700">${o.net_pct.toFixed(3)}%</td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function saveCommarbConfig() {
+    const payload = {
+      min_net_pct:   parseFloat(document.getElementById('ca-min-pct').value),
+      max_lots_big:  parseInt(document.getElementById('ca-max-lots').value),
+      paper_mode:    document.getElementById('ca-paper').checked,
+      active:        document.getElementById('ca-active').checked,
+    };
+    await fetch('/commarb/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    ['ca-min-pct','ca-max-lots','ca-paper','ca-active'].forEach(id => {
+      const e = document.getElementById(id); if (e) e._touched = false;
+    });
+    await loadCommarb();
+  }
+
+  setInterval(() => {
+    if (currentView === 'commarb') loadCommarb();
   }, 1000);
 
   // ── Arb Monitor ──────────────────────────────────────────────────────────

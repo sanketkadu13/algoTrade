@@ -1,0 +1,30 @@
+{
+  "_meta": {
+    "note": "Commodity lot-size arbitrage pairs. Each pair has a 'big' contract and a 'mini' variant of the SAME underlying on MCX, with the lot ratio. Trade size must be a multiple of the LCM of the two lot sizes to neutralize underlying exposure.",
+    "edit_to_extend": "Append entries here and restart the service. Include only pairs with whole-number ratios (e.g. 1:10, 1:5) — uneven ratios like 12.5:1 are skipped automatically."
+  },
+  "pairs": [
+    {
+      "id":           "CRUDE",
+      "label":        "Crude Oil",
+      "big_prefix":   "CRUDEOIL",
+      "mini_prefix":  "CRUDEOILM",
+      "big_lot_size": 100,
+      "mini_lot_size": 10,
+      "unit":         "bbl",
+      "exchange":     "MCX",
+      "is_non_agri":  true
+    },
+    {
+      "id":           "NATGAS",
+      "label":        "Natural Gas",
+      "big_prefix":   "NATURALGAS",
+      "mini_prefix":  "NATURALGASM",
+      "big_lot_size": 1250,
+      "mini_lot_size": 250,
+      "unit":         "mmBtu",
+      "exchange":     "MCX",
+      "is_non_agri":  true
+    }
+  ]
+}

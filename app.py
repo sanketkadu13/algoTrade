@@ -903,6 +903,10 @@ def _do_auto_entry(sid: str) -> dict:
     broadcast()
     return {"ok": True, "msg": "Entry placed; monitoring started"}
 
+_auto_entry_paused_for: str | None = None   # YYYY-MM-DD on which auto-entry is paused
+                                            # Declared here (not later) so the scheduler
+                                            # thread can read it on its first tick.
+
 def _auto_entry_scheduler():
     """Check every 20s if any strategy is due for auto-entry."""
     while True:
@@ -1281,7 +1285,6 @@ _TG_CHAT_ID = str(os.getenv("TELEGRAM_CHAT_ID", ""))
 _TG_API     = f"https://api.telegram.org/bot{_TG_TOKEN}" if _TG_TOKEN else None
 _tg_last_update_id = 0
 _tg_pending: dict = {}        # chat_id -> {action, args, expires_at}
-_auto_entry_paused_for: str | None = None   # YYYY-MM-DD on which auto-entry is paused
 
 def _tg_send_reply(text: str):
     """Send a Telegram message (Markdown). Returns bool."""

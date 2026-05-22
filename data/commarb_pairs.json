@@ -19,7 +19,7 @@
       "id":           "NATGAS",
       "label":        "Natural Gas",
       "big_prefix":   "NATURALGAS",
-      "mini_prefix":  "NATURALGASM",
+      "mini_prefix":  "NATGASMINI",
       "big_lot_size": 1250,
       "mini_lot_size": 250,
       "unit":         "mmBtu",

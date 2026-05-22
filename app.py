@@ -5182,15 +5182,12 @@ def _commarb_resolve_pairs():
         if not big or not mini:
             skipped.append({"id": p.get("id"), "reason": f"could not resolve {p['big_prefix']}/{p['mini_prefix']}"})
             continue
-        # Sanity-check lot sizes vs what kite reports (catches drift if exchange changes lot sizes)
-        big_lot_live  = int(big.get("lot_size") or 0)
-        mini_lot_live = int(mini.get("lot_size") or 0)
-        if big_lot_live and big_lot_live != p["big_lot_size"]:
-            print(f"[commarb] WARN {p['id']}: big_lot JSON={p['big_lot_size']} kite={big_lot_live}; using kite value")
-            p["big_lot_size"] = big_lot_live
-        if mini_lot_live and mini_lot_live != p["mini_lot_size"]:
-            print(f"[commarb] WARN {p['id']}: mini_lot JSON={p['mini_lot_size']} kite={mini_lot_live}; using kite value")
-            p["mini_lot_size"] = mini_lot_live
+        # Note: for MCX, kite.instruments() reports lot_size=1 as a convention
+        # — their "quantity" unit in order/depth is the contract count itself,
+        # not the underlying physical unit. So we DO NOT override the JSON
+        # value here. The JSON's lot_size represents physical units per
+        # contract (bbl / mmBtu / kg / MT), which we use to convert depth
+        # qty (in contracts) → physical units for LCM matching.
         resolved.append({
             **p,
             "big_symbol":      big["tradingsymbol"],
@@ -5288,56 +5285,55 @@ def _commarb_compute_opps() -> list:
     out = []
     with _interarb_depth_lock:
         depth = dict(_interarb_depth)
+    from math import gcd as _gcd
     for p in _commarb_pairs:
         b = depth.get(p["big_token"])  or {}
         m = depth.get(p["mini_token"]) or {}
         big_bid     = b.get("bid")     or 0
         big_ask     = b.get("ask")     or 0
-        big_bid_qty = b.get("bid_qty") or 0   # in physical units (barrels / mmBtu)
-        big_ask_qty = b.get("ask_qty") or 0
-        mini_bid     = m.get("bid")     or 0
-        mini_ask     = m.get("ask")     or 0
-        mini_bid_qty = m.get("bid_qty") or 0
-        mini_ask_qty = m.get("ask_qty") or 0
-        big_ltp     = b.get("ltp")     or 0
-        mini_ltp    = m.get("ltp")     or 0
+        # MCX reports bid/ask qty in CONTRACTS (lots), not physical units.
+        # We convert to physical units (bbl/mmBtu/kg/MT) for LCM-matching.
+        big_bid_lots = b.get("bid_qty") or 0
+        big_ask_lots = b.get("ask_qty") or 0
+        mini_bid    = m.get("bid")     or 0
+        mini_ask    = m.get("ask")     or 0
+        mini_bid_lots = m.get("bid_qty") or 0
+        mini_ask_lots = m.get("ask_qty") or 0
 
         big_lot  = int(p["big_lot_size"])
         mini_lot = int(p["mini_lot_size"])
-        # LCM of lot sizes — the smallest physical trade unit (in barrels/mmBtu)
-        from math import gcd as _gcd
-        lcm_units = (big_lot * mini_lot) // _gcd(big_lot, mini_lot)
+        lcm_units = (big_lot * mini_lot) // _gcd(big_lot, mini_lot)  # smallest balanced trade size
 
-        # ── Direction 1: SELL big, BUY mini  (big > mini in ₹/unit)
-        # ── Direction 2: SELL mini, BUY big (mini > big in ₹/unit)
-        for direction, sell_px, sell_qty, buy_px, buy_qty, sell_is_big in (
-            ("sell_big_buy_mini",   big_bid,  big_bid_qty,  mini_ask, mini_ask_qty, True),
-            ("sell_mini_buy_big",   mini_bid, mini_bid_qty, big_ask,  big_ask_qty,  False),
+        for direction, sell_px, sell_lots, buy_px, buy_lots, sell_is_big in (
+            ("sell_big_buy_mini",   big_bid,  big_bid_lots,  mini_ask, mini_ask_lots, True),
+            ("sell_mini_buy_big",   mini_bid, mini_bid_lots, big_ask,  big_ask_lots,  False),
         ):
-            if sell_px <= 0 or buy_px <= 0 or sell_qty <= 0 or buy_qty <= 0:
+            if sell_px <= 0 or buy_px <= 0 or sell_lots <= 0 or buy_lots <= 0:
                 continue
-            edge_per_unit = sell_px - buy_px
+            edge_per_unit = sell_px - buy_px   # ₹ per physical unit (both quoted in same units)
             if edge_per_unit <= 0:
                 continue
-            # max balanced physical units = min of both sides, rounded down to LCM
-            avail_units = min(sell_qty, buy_qty)
+
+            # Sell side's physical-unit availability; buy side's too. Both in same physical unit.
+            sell_lot_size = big_lot if sell_is_big else mini_lot
+            buy_lot_size  = mini_lot if sell_is_big else big_lot
+            sell_units = sell_lots * sell_lot_size
+            buy_units  = buy_lots  * buy_lot_size
+            avail_units = min(sell_units, buy_units)
             avail_units_balanced = (avail_units // lcm_units) * lcm_units
             if avail_units_balanced <= 0:
                 continue
-            # Cap to max_lots_big (in physical units)
             cap_units = cap_lots * big_lot
             traded_units = min(avail_units_balanced, cap_units)
             if traded_units <= 0:
                 continue
+
             big_lots_traded  = traded_units // big_lot
             mini_lots_traded = traded_units // mini_lot
-            big_notional  = big_ltp  * (big_lots_traded  * big_lot)  if big_ltp  else (sell_px if sell_is_big else buy_px) * traded_units
-            mini_notional = mini_ltp * (mini_lots_traded * mini_lot) if mini_ltp else (sell_px if not sell_is_big else buy_px) * traded_units
-            # Actually compute each leg's notional at its execution price
-            big_exec_px  = sell_px if sell_is_big else buy_px
-            mini_exec_px = sell_px if not sell_is_big else buy_px
-            big_notional  = big_exec_px  * (big_lots_traded  * big_lot)
-            mini_notional = mini_exec_px * (mini_lots_traded * mini_lot)
+            big_exec_px      = sell_px if sell_is_big else buy_px
+            mini_exec_px     = sell_px if not sell_is_big else buy_px
+            big_notional     = big_exec_px  * big_lots_traded  * big_lot
+            mini_notional    = mini_exec_px * mini_lots_traded * mini_lot
 
             gross = edge_per_unit * traded_units
             cost  = _commarb_intraday_cost(big_notional, mini_notional,
@@ -5368,9 +5364,9 @@ def _commarb_compute_opps() -> list:
                 "net_pnl":          round(net, 0),
                 "net_pct":          round(net_pct, 4),
                 "big_bid":          big_bid,  "big_ask":  big_ask,
-                "big_bid_qty":      big_bid_qty,  "big_ask_qty":  big_ask_qty,
+                "big_bid_lots":     big_bid_lots,  "big_ask_lots":  big_ask_lots,
                 "mini_bid":         mini_bid, "mini_ask": mini_ask,
-                "mini_bid_qty":     mini_bid_qty, "mini_ask_qty": mini_ask_qty,
+                "mini_bid_lots":    mini_bid_lots, "mini_ask_lots": mini_ask_lots,
             })
     out.sort(key=lambda r: -r["net_pct"])
     return out

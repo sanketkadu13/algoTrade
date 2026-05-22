@@ -66,7 +66,38 @@ ssh kite-vm 'cd /opt/kite && git pull && \
 All instances run the same code from `/opt/kite/`, so one `git pull` + a
 glob-restart updates everyone at once.
 
-## Adding a user
+## Adding a user — two paths
+
+### A) UI-driven onboarding (recommended)
+
+Prerequisites (one-time setup):
+
+1. **Pre-open ports 8001-8010** in your AWS Security Group (Inbound rules → Custom TCP, port range 8001-8010, source 0.0.0.0/0). Without this, provisioned users won't be reachable from the internet.
+
+2. **Enable admin on the primary instance**:
+   ```bash
+   ssh kite-vm 'echo "ADMIN_ENABLED=true" | sudo tee -a /opt/kite-data-omkar/.env && sudo systemctl restart kite-monitor'
+   ```
+
+3. **Install the sudoers rule** (lets the Flask process call the onboarding scripts via sudo):
+   ```bash
+   ssh kite-vm 'sudo cp /opt/kite/deploy/templates/sudoers-onboarding.tmpl /etc/sudoers.d/kite-onboarding && \
+                sudo chown root:root /etc/sudoers.d/kite-onboarding && \
+                sudo chmod 440 /etc/sudoers.d/kite-onboarding && \
+                sudo visudo -cf /etc/sudoers.d/kite-onboarding'
+   ```
+
+Then for every new user:
+1. Open your dashboard → **👥 Admin** tab in the sidebar.
+2. Click **+ Generate Link**, optionally type their intended slug as a hint.
+3. Copy the invite link, send it via WhatsApp/email.
+4. Invitee opens the link, fills in the form (slug, dashboard password, Kite API key/secret/access token, optional Telegram).
+5. Form submission validates their Kite creds, then provisions an isolated instance in ~5 seconds.
+6. Invitee gets a success page with their dashboard URL + login.
+
+The Admin tab also lists running users (with status + URL) and outstanding invites with copy/revoke buttons.
+
+### B) SSH-driven (fallback, manual)
 
 ```bash
 ssh kite-vm
@@ -79,6 +110,12 @@ sudo systemctl reload nginx
 ```
 
 User accesses at `http://<vm-ip>:<port>/` with the basic-auth credentials you set.
+
+## Security caveats for UI onboarding
+
+- **No HTTPS** = the invite form transmits Kite API secrets over plaintext. Only send invite links to people on a trusted network (your home wifi, mobile data via VPN, etc.), or set up Let's Encrypt with a real domain before going wider. The Admin tab shows a banner reminder.
+- **Invite links are one-time** but anyone who intercepts the link before it's used can spawn a new instance.
+- **Sudoers grants NOPASSWD only for `add_user_ui.sh` and `remove_user.sh`** — not arbitrary sudo. If RCE happens in Flask, attacker is limited to spawning more user instances (still bad, mitigated by the `ADMIN_MAX_USERS` cap).
 
 ## Removing a user
 

@@ -25,6 +25,15 @@ load_dotenv(_data_dir_envfile)
 
 app = Flask(__name__)
 
+# ── Admin / onboarding (only enabled when ADMIN_ENABLED=true in this instance's .env) ──
+# When ON, this instance can invite new users + provision additional Flask
+# processes via the bin/add_user_ui.sh script (run via sudo). Only one
+# instance (typically the primary / "omkar") should have this enabled.
+ADMIN_ENABLED = os.getenv("ADMIN_ENABLED", "").lower() in ("1", "true", "yes", "on")
+ADMIN_MAX_USERS = int(os.getenv("ADMIN_MAX_USERS", "10"))
+import secrets as _secrets
+import subprocess as _subprocess
+
 # ── Kite ──────────────────────────────────────────────────────────────────────
 API_KEY      = os.getenv("API_KEY")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
@@ -4317,6 +4326,336 @@ def straddle_skip_today_route():
         _straddle_state["lifecycle"]   = "skipped"
     _straddle_log("manual_skip")
     return jsonify({"ok": True})
+
+
+# ── Admin / onboarding ────────────────────────────────────────────────────────
+# Lets the primary user (ADMIN_ENABLED=true in their .env) generate invite
+# links, list active users, and remove users. Onboarding is handled by a
+# public /onboard?token=X page that takes the invitee's Kite creds + chosen
+# password, validates them, then runs sudo /opt/kite/bin/add_user_ui.sh to
+# provision a fresh isolated instance.
+#
+# Invite tokens are stored in DATA_DIR/data/invites.json — small JSON file.
+
+_INVITES_PATH = os.path.join(DATA_DIR, "data", "invites.json")
+_invites_lock = threading.Lock()
+
+def _load_invites() -> dict:
+    if not os.path.exists(_INVITES_PATH):
+        return {}
+    try:
+        with open(_INVITES_PATH, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_invites(invites: dict):
+    os.makedirs(os.path.dirname(_INVITES_PATH), exist_ok=True)
+    tmp = _INVITES_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(invites, f, indent=2, default=str)
+    os.replace(tmp, _INVITES_PATH)
+
+def _scan_provisioned_users() -> list[dict]:
+    """Scan /etc/systemd/system/kite-monitor-*.service to find provisioned
+    user instances. Each returned row has slug + flask_port + public_port +
+    is_running."""
+    out = []
+    sysd_dir = "/etc/systemd/system"
+    if not os.path.isdir(sysd_dir):
+        return out
+    for fname in sorted(os.listdir(sysd_dir)):
+        m = None
+        if fname.startswith("kite-monitor-") and fname.endswith(".service"):
+            slug = fname[len("kite-monitor-"):-len(".service")]
+        else:
+            continue
+        try:
+            with open(os.path.join(sysd_dir, fname), "r") as f:
+                content = f.read()
+        except OSError:
+            continue
+        # Parse PORT and DATA_DIR from the unit
+        flask_port = None
+        data_dir   = None
+        for line in content.splitlines():
+            line = line.strip()
+            if line.startswith('Environment="PORT='):
+                try:
+                    flask_port = int(line.split("PORT=")[1].rstrip('"'))
+                except (ValueError, IndexError):
+                    pass
+            elif line.startswith('Environment="DATA_DIR='):
+                data_dir = line.split("DATA_DIR=")[1].rstrip('"')
+        # Look up public port from the matching nginx file
+        public_port = None
+        nginx_file = f"/etc/nginx/sites-enabled/kite-{slug}"
+        if os.path.exists(nginx_file):
+            try:
+                with open(nginx_file, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("listen "):
+                            try:
+                                public_port = int(line.split()[1].rstrip(";"))
+                                break
+                            except (ValueError, IndexError):
+                                pass
+            except OSError:
+                pass
+        # Service status
+        try:
+            r = _subprocess.run(
+                ["systemctl", "is-active", f"kite-monitor-{slug}"],
+                capture_output=True, text=True, timeout=2,
+            )
+            is_running = (r.stdout.strip() == "active")
+        except Exception:
+            is_running = False
+        out.append({
+            "slug":         slug,
+            "flask_port":   flask_port,
+            "public_port":  public_port,
+            "data_dir":     data_dir,
+            "is_running":   is_running,
+        })
+    return out
+
+
+@app.route("/admin/state", methods=["GET"])
+def admin_state_route():
+    """Returns admin-panel state. 403 if this instance isn't an admin instance."""
+    if not ADMIN_ENABLED:
+        return jsonify({"ok": False, "error": "admin not enabled on this instance"}), 403
+    with _invites_lock:
+        invites_raw = _load_invites()
+    # Filter expired
+    now = _now_ist()
+    invites = []
+    for tok, rec in invites_raw.items():
+        try:
+            expires = datetime.fromisoformat(rec["expires_at"])
+        except Exception:
+            continue
+        if expires < now:
+            continue
+        if rec.get("used"):
+            continue
+        invites.append({
+            "token":      tok,
+            "slug_hint":  rec.get("slug_hint", ""),
+            "created_at": rec.get("created_at"),
+            "expires_at": rec.get("expires_at"),
+        })
+    return jsonify({
+        "ok": True,
+        "admin_enabled": True,
+        "max_users":     ADMIN_MAX_USERS,
+        "users":         _scan_provisioned_users(),
+        "invites":       invites,
+    })
+
+
+@app.route("/admin/invite", methods=["POST"])
+def admin_invite_route():
+    """Create a one-time invite. Body: {slug_hint?: str, ttl_hours?: int}."""
+    if not ADMIN_ENABLED:
+        return jsonify({"ok": False, "error": "admin not enabled"}), 403
+    # Cap total users
+    if len(_scan_provisioned_users()) >= ADMIN_MAX_USERS:
+        return jsonify({"ok": False, "error": f"max users ({ADMIN_MAX_USERS}) reached"}), 400
+    d = request.json or {}
+    slug_hint = (d.get("slug_hint") or "").strip().lower()
+    ttl_hours = int(d.get("ttl_hours") or 24)
+    if slug_hint and not slug_hint.replace("-", "").isalnum():
+        return jsonify({"ok": False, "error": "slug_hint must be lowercase a-z, 0-9, dash"}), 400
+    token = _secrets.token_urlsafe(24)
+    now = _now_ist()
+    rec = {
+        "slug_hint":  slug_hint,
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=ttl_hours)).isoformat(),
+        "used":       False,
+    }
+    with _invites_lock:
+        invites = _load_invites()
+        invites[token] = rec
+        _save_invites(invites)
+    # Build the invite URL using the request host
+    base = request.host_url.rstrip("/")
+    url = f"{base}/onboard?token={token}"
+    return jsonify({"ok": True, "token": token, "url": url, "expires_at": rec["expires_at"]})
+
+
+@app.route("/admin/invite/<token>", methods=["DELETE"])
+def admin_invite_revoke_route(token: str):
+    """Revoke an outstanding invite."""
+    if not ADMIN_ENABLED:
+        return jsonify({"ok": False, "error": "admin not enabled"}), 403
+    with _invites_lock:
+        invites = _load_invites()
+        if token in invites:
+            invites.pop(token, None)
+            _save_invites(invites)
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/users/<slug>/remove", methods=["POST"])
+def admin_remove_user_route(slug: str):
+    """Remove a provisioned user. Calls sudo bin/remove_user.sh; archives data."""
+    if not ADMIN_ENABLED:
+        return jsonify({"ok": False, "error": "admin not enabled"}), 403
+    if not slug.replace("-", "").isalnum():
+        return jsonify({"ok": False, "error": "bad slug"}), 400
+    # remove_user.sh has an interactive confirm. We feed the slug to stdin.
+    try:
+        r = _subprocess.run(
+            ["sudo", "/opt/kite/bin/remove_user.sh", slug],
+            input=f"{slug}\n", capture_output=True, text=True, timeout=30,
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"subprocess failed: {e}"}), 500
+    if r.returncode != 0:
+        return jsonify({"ok": False, "error": r.stderr or r.stdout}), 500
+    return jsonify({"ok": True, "output": r.stdout})
+
+
+# ── Public onboarding (invite-token gated) ─────────────────────────────────
+@app.route("/onboard", methods=["GET"])
+def onboard_page():
+    """Render the public onboarding form. Validates the token before showing
+    the form so visitors with a bad/expired/used token see a clear error."""
+    token = (request.args.get("token") or "").strip()
+    if not token:
+        return render_template("onboard.html", error="No invite token in URL.", token="")
+    with _invites_lock:
+        invites = _load_invites()
+        rec = invites.get(token)
+    err = None
+    if not rec:
+        err = "Invite link is invalid."
+    elif rec.get("used"):
+        err = "This invite has already been used."
+    else:
+        try:
+            expires = datetime.fromisoformat(rec["expires_at"])
+            if expires < _now_ist():
+                err = "This invite has expired."
+        except Exception:
+            err = "Invite is malformed."
+    return render_template(
+        "onboard.html",
+        error=err,
+        token=token,
+        slug_hint=(rec or {}).get("slug_hint", "") if not err else "",
+    )
+
+
+@app.route("/onboard/submit", methods=["POST"])
+def onboard_submit_route():
+    """Provision a new user from form values + invite token."""
+    d = request.json or request.form.to_dict() or {}
+    token = (d.get("token") or "").strip()
+    if not token:
+        return jsonify({"ok": False, "error": "missing token"}), 400
+
+    # ── Validate token under lock so we can't double-consume
+    with _invites_lock:
+        invites = _load_invites()
+        rec = invites.get(token)
+        if not rec:
+            return jsonify({"ok": False, "error": "invalid token"}), 400
+        if rec.get("used"):
+            return jsonify({"ok": False, "error": "token already used"}), 400
+        try:
+            if datetime.fromisoformat(rec["expires_at"]) < _now_ist():
+                return jsonify({"ok": False, "error": "token expired"}), 400
+        except Exception:
+            return jsonify({"ok": False, "error": "malformed token"}), 400
+
+    slug          = (d.get("slug") or "").strip().lower()
+    dash_password = d.get("dash_password") or ""
+    api_key       = (d.get("api_key") or "").strip()
+    api_secret    = (d.get("api_secret") or "").strip()
+    access_token  = (d.get("access_token") or "").strip()
+    kite_user_id  = (d.get("kite_user_id") or "").strip()
+    kite_password = d.get("kite_password") or ""
+    totp_secret   = (d.get("totp_secret") or "").strip()
+    tg_token      = (d.get("telegram_token") or "").strip()
+    tg_chat       = (d.get("telegram_chat_id") or "").strip()
+
+    # ── Basic shape checks
+    if not slug or not slug.replace("-", "").replace("_", "").isalnum():
+        return jsonify({"ok": False, "error": "slug: lowercase letters/digits/dash only"}), 400
+    if slug in ("omkar", "admin", "root"):
+        return jsonify({"ok": False, "error": f"slug '{slug}' is reserved"}), 400
+    if len(dash_password) < 6:
+        return jsonify({"ok": False, "error": "dashboard password must be at least 6 chars"}), 400
+    if not (api_key and api_secret and access_token):
+        return jsonify({"ok": False, "error": "Kite API key, secret, and access token are required"}), 400
+
+    # ── Validate creds against Kite before provisioning
+    try:
+        k = KiteConnect(api_key=api_key)
+        k.set_access_token(access_token)
+        profile = k.profile()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Kite credential check failed: {e}"}), 400
+
+    # ── Provision via sudo script
+    env = {
+        "PATH":             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "SLUG":             slug,
+        "DASH_PASSWORD":    dash_password,
+        "API_KEY":          api_key,
+        "API_SECRET":       api_secret,
+        "ACCESS_TOKEN":     access_token,
+        "KITE_USER_ID":     kite_user_id or profile.get("user_id") or "",
+        "KITE_PASSWORD":    kite_password or "",
+        "KITE_TOTP_SECRET": totp_secret or "",
+        "TELEGRAM_TOKEN":   tg_token or "",
+        "TELEGRAM_CHAT_ID": tg_chat or "",
+    }
+    try:
+        r = _subprocess.run(
+            ["sudo", "-E", "/opt/kite/bin/add_user_ui.sh"],
+            env=env, capture_output=True, text=True, timeout=60,
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"subprocess failed: {e}"}), 500
+
+    # add_user_ui.sh prints structured JSON either way
+    try:
+        result = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        result = {"ok": False, "error": (r.stderr or r.stdout or "no output").strip()}
+
+    if not result.get("ok"):
+        return jsonify(result), 500
+
+    # ── Mark token used
+    with _invites_lock:
+        invites = _load_invites()
+        if token in invites:
+            invites[token]["used"]      = True
+            invites[token]["used_at"]   = _now_ist().isoformat()
+            invites[token]["used_slug"] = slug
+            _save_invites(invites)
+
+    # ── Build the user's URL from the request host but swap the port
+    public_port = result["public_port"]
+    host = request.host.split(":")[0]
+    scheme = "https" if request.headers.get("X-Forwarded-Proto") == "https" else "http"
+    dashboard_url = f"{scheme}://{host}:{public_port}/"
+
+    return jsonify({
+        "ok":            True,
+        "slug":          slug,
+        "public_port":   public_port,
+        "dashboard_url": dashboard_url,
+        "login_user":    slug,
+        "kite_user_id":  profile.get("user_id"),
+    })
 
 
 # ── Data export ───────────────────────────────────────────────────────────────

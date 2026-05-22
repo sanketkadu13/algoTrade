@@ -1,0 +1,11 @@
+# Grant the ubuntu user passwordless sudo for ONLY the onboarding scripts.
+# Drop this file at /etc/sudoers.d/kite-onboarding (chmod 440, owned by root).
+#
+# Validate with: sudo visudo -cf /etc/sudoers.d/kite-onboarding
+#
+# Without this, the Flask process can't call sudo /opt/kite/bin/add_user_ui.sh
+# during UI-driven onboarding. Limit the surface to just these two scripts;
+# do NOT grant broader sudo.
+
+ubuntu ALL=(root) NOPASSWD: /opt/kite/bin/add_user_ui.sh
+ubuntu ALL=(root) NOPASSWD: /opt/kite/bin/remove_user.sh

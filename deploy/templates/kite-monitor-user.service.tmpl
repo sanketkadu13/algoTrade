@@ -1,0 +1,24 @@
+[Unit]
+Description=Kite MTM Monitor — %%USER_SLUG%%
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=%%DATA_DIR%%
+EnvironmentFile=%%DATA_DIR%%/.env
+Environment="DATA_DIR=%%DATA_DIR%%"
+Environment="PORT=%%FLASK_PORT%%"
+ExecStart=/opt/kite/venv/bin/python /opt/kite/app.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/kite-monitor-%%USER_SLUG%%.log
+StandardError=append:/var/log/kite-monitor-%%USER_SLUG%%.log
+
+# Resource caps so one user's runaway process can't take down others
+MemoryMax=512M
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target

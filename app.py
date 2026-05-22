@@ -15,181 +15,21 @@ from dotenv import load_dotenv, set_key
 import io
 import zipfile
 
-from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, url_for
+from flask import Flask, Response, jsonify, render_template, request, send_file
 from kiteconnect import KiteConnect
 
-import users
-
-load_dotenv()
+# Load .env from DATA_DIR if set (so each user instance gets its own creds),
+# else fall back to a .env next to app.py (legacy single-user layout).
+_data_dir_envfile = os.path.join(os.environ.get("DATA_DIR", os.path.dirname(__file__)), ".env")
+load_dotenv(_data_dir_envfile)
 
 app = Flask(__name__)
-# Signed-cookie sessions. Generate a strong random secret on first boot if
-# none is configured. Keeps existing sessions valid across deploys when set.
-_session_secret = os.getenv("SESSION_SECRET")
-if not _session_secret:
-    _env_path = os.path.join(os.path.dirname(__file__), ".env")
-    _session_secret = os.urandom(32).hex()
-    try:
-        set_key(_env_path, "SESSION_SECRET", _session_secret)
-    except Exception as _e:
-        print(f"[auth] could not persist SESSION_SECRET to .env: {_e}")
-app.secret_key = _session_secret
-app.config.update(
-    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE="Lax",
-)
-
-# Initialise the users SQLite store (idempotent)
-users.init_db()
 
 # ── Kite ──────────────────────────────────────────────────────────────────────
 API_KEY      = os.getenv("API_KEY")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 kite = KiteConnect(api_key=API_KEY)
 kite.set_access_token(ACCESS_TOKEN)
-
-# ── Phase 1 migration: seed user #1 from .env if the table is empty ──
-def _seed_user_from_env() -> None:
-    """If no users exist in the DB but the .env has Kite creds, create user #1.
-    We need a kite_user_id, which we get by calling kite.profile()."""
-    try:
-        if users.list_users():
-            return
-        if not API_KEY or not os.getenv("API_SECRET") or not ACCESS_TOKEN:
-            print("[auth] no users in DB and no .env Kite creds — first visit must sign up via UI")
-            return
-        try:
-            profile = kite.profile()
-            kite_user_id = profile.get("user_id") or os.getenv("KITE_USER_ID") or "user1"
-            display_name = profile.get("user_name") or kite_user_id
-        except Exception as e:
-            # Token might be stale at boot; fall back to env vars
-            kite_user_id = os.getenv("KITE_USER_ID") or "user1"
-            display_name = kite_user_id
-            print(f"[auth] kite.profile() failed during seed ({e}); using kite_user_id={kite_user_id}")
-        users.upsert_user(
-            kite_user_id=kite_user_id,
-            api_key=API_KEY,
-            api_secret=os.getenv("API_SECRET", ""),
-            access_token=ACCESS_TOKEN,
-            totp_secret=os.getenv("KITE_TOTP_SECRET"),
-            kite_password=os.getenv("KITE_PASSWORD"),
-            display_name=display_name,
-        )
-        print(f"[auth] seeded user #1 from .env: {kite_user_id}")
-    except Exception as e:
-        print(f"[auth] seed-from-env failed: {e}")
-
-_seed_user_from_env()
-
-
-# ── Auth: routes + middleware (Phase 1) ───────────────────────────────────────
-# Phase 1 only adds the auth shell. State is not user-scoped yet — that's Phase
-# 2. For now the app still operates on its global state; auth merely gates access.
-
-# Endpoints that don't require authentication
-_AUTH_PUBLIC_ENDPOINTS = {
-    "auth_page", "auth_signup", "auth_login_as", "auth_logout",
-    "static",
-}
-
-@app.before_request
-def _auth_middleware():
-    # Allow public endpoints (login page + signup itself)
-    if request.endpoint in _AUTH_PUBLIC_ENDPOINTS:
-        return
-    if users.current_user_id():
-        return  # logged in — proceed
-    # Auto-login as the lone user if exactly one exists. Preserves existing
-    # single-user behaviour: the deployment that's been running for one human
-    # keeps working with zero clicks. Switches to required-login the moment a
-    # second user is added.
-    all_users = users.list_users()
-    if len(all_users) == 1:
-        users.login_user(all_users[0]["kite_user_id"])
-        return
-    # Otherwise: send to /auth (browser) or 401 (API/AJAX)
-    wants_json = (
-        request.path.startswith("/api/")
-        or request.is_json
-        or request.headers.get("Accept", "").startswith("application/json")
-        or request.method != "GET"
-    )
-    if wants_json:
-        return jsonify({"ok": False, "error": "auth required"}), 401
-    return redirect(url_for("auth_page"))
-
-
-@app.route("/auth", methods=["GET"])
-def auth_page():
-    """Login / add-account landing page."""
-    return render_template("auth.html", users=users.list_users())
-
-
-@app.route("/auth/signup", methods=["POST"])
-def auth_signup():
-    """Add a new user: validate their Kite creds via kite.profile(), then
-    upsert + log them in.
-
-    Body: {api_key, api_secret, access_token, display_name?, totp_secret?, kite_password?}
-    """
-    d = request.json or request.form.to_dict() or {}
-    api_key      = (d.get("api_key") or "").strip()
-    api_secret   = (d.get("api_secret") or "").strip()
-    access_token = (d.get("access_token") or "").strip()
-    if not (api_key and api_secret and access_token):
-        return jsonify({"ok": False, "error": "api_key, api_secret, access_token required"}), 400
-    try:
-        k = KiteConnect(api_key=api_key)
-        k.set_access_token(access_token)
-        profile = k.profile()
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"Kite profile call failed: {e}"}), 400
-    kite_user_id = profile.get("user_id")
-    if not kite_user_id:
-        return jsonify({"ok": False, "error": "Kite profile returned no user_id"}), 400
-    users.upsert_user(
-        kite_user_id=kite_user_id,
-        api_key=api_key,
-        api_secret=api_secret,
-        access_token=access_token,
-        totp_secret=(d.get("totp_secret") or None),
-        kite_password=(d.get("kite_password") or None),
-        display_name=(d.get("display_name") or profile.get("user_name") or kite_user_id),
-    )
-    users.login_user(kite_user_id)
-    return jsonify({"ok": True, "kite_user_id": kite_user_id})
-
-
-@app.route("/auth/login-as/<kite_user_id>", methods=["POST"])
-def auth_login_as(kite_user_id: str):
-    """Switch to an existing user. No password — see module docstring for the
-    trust model. Use only on private deployments."""
-    if not users.get_user(kite_user_id):
-        return jsonify({"ok": False, "error": "user not found"}), 404
-    users.login_user(kite_user_id)
-    return jsonify({"ok": True})
-
-
-@app.route("/auth/logout", methods=["POST", "GET"])
-def auth_logout():
-    users.logout_user()
-    if request.method == "GET":
-        return redirect(url_for("auth_page"))
-    return jsonify({"ok": True})
-
-
-@app.route("/auth/me", methods=["GET"])
-def auth_me():
-    """Returns the current user's identity (sans secrets)."""
-    u = users.current_user()
-    if not u:
-        return jsonify({"ok": False, "error": "not logged in"}), 401
-    return jsonify({"ok": True, "user": {
-        "kite_user_id": u["kite_user_id"],
-        "display_name": u.get("display_name"),
-    }})
 
 # ── Per-strategy state ────────────────────────────────────────────────────────
 _lock         = threading.RLock()
@@ -203,8 +43,19 @@ _histories:   dict[str, list]                   = {}
 _history_lock = threading.Lock()
 _csv_paths:   dict[str, str]                    = {}
 
-# All per-strategy MTM CSVs live under data/csv/
-_CSV_DIR = os.path.join(os.path.dirname(__file__), "data", "csv")
+# ── Path layout (single-user-per-process / process-isolation model) ──────────
+# CODE_DIR is the directory of this file — shared across all user instances
+# (one git checkout, many running processes). It contains read-only resources
+# like the NSE holiday calendar, templates, and static assets.
+# DATA_DIR is where the running instance writes its per-user state: .env,
+# strategies.json, CSVs, runtime JSON snapshots. Default = CODE_DIR for the
+# legacy single-user layout; override via the DATA_DIR env var to point at a
+# user-specific dir like /opt/kite-data-omkar/.
+CODE_DIR = os.path.dirname(__file__)
+DATA_DIR = os.environ.get("DATA_DIR", CODE_DIR)
+
+# All per-strategy MTM CSVs live under <DATA_DIR>/data/csv/
+_CSV_DIR = os.path.join(DATA_DIR, "data", "csv")
 os.makedirs(_CSV_DIR, exist_ok=True)
 
 def _make_strategy(name: str, sid: str, type_: str = "custom") -> dict:
@@ -227,7 +78,7 @@ def _make_strategy(name: str, sid: str, type_: str = "custom") -> dict:
         "auto_entry_status":      "idle", # runtime — idle | firing | done | failed:<msg>
     }
 
-_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "strategies.json")
+_CONFIG_FILE = os.path.join(DATA_DIR, "strategies.json")
 
 def _save_config():
     """Persist all strategy configs to strategies.json."""
@@ -791,7 +642,8 @@ def _load_nse_holidays() -> set:
     """Load NSE holiday dates from data/nse_holidays_YYYY.json."""
     holidays = set()
     year = _now_ist().year
-    path = os.path.join(os.path.dirname(__file__), "data", f"nse_holidays_{year}.json")
+    # Holiday calendar is reference data — lives with the code, not per-user.
+    path = os.path.join(CODE_DIR, "data", f"nse_holidays_{year}.json")
     try:
         with open(path) as f:
             data = json.load(f)
@@ -1984,7 +1836,7 @@ def _auto_refresh_token_via_totp() -> tuple[bool, str]:
         # Step 4: exchange for access_token
         sd = kite.generate_session(rt, api_secret=api_secret)
         new_token = sd["access_token"]
-        env_path = os.path.join(os.path.dirname(__file__), ".env")
+        env_path = os.path.join(DATA_DIR, ".env")
         set_key(env_path, "ACCESS_TOKEN", new_token)
         kite.set_access_token(new_token)
         _last_token_refresh = _now_ist().isoformat(timespec="seconds")
@@ -2046,7 +1898,7 @@ def auth_submit_token():
             return jsonify({"ok": False, "error": "API_SECRET missing from .env"})
         session_data = kite.generate_session(request_token, api_secret=api_secret)
         new_token = session_data["access_token"]
-        env_path = os.path.join(os.path.dirname(__file__), ".env")
+        env_path = os.path.join(DATA_DIR, ".env")
         set_key(env_path, "ACCESS_TOKEN", new_token)
         kite.set_access_token(new_token)                 # update in-memory client — no restart needed
         _last_token_refresh = _now_ist().isoformat(timespec="seconds")
@@ -2062,7 +1914,7 @@ def auth_submit_token():
         return jsonify({"ok": False, "error": str(e)})
 
 # ── Strategy templates ────────────────────────────────────────────────────────
-_TEMPLATES_FILE = os.path.join(os.path.dirname(__file__), "data", "templates.json")
+_TEMPLATES_FILE = os.path.join(DATA_DIR, "data", "templates.json")
 
 def _load_templates() -> list:
     try:
@@ -2276,7 +2128,7 @@ def update_config(sid: str):
     if sid not in strategies:
         return jsonify({"ok": False, "msg": "Strategy not found"})
     data     = request.json or {}
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    env_path = os.path.join(DATA_DIR, ".env")
     # Snapshot before-change values for audit alert if running
     was_running = strategies[sid].get("running", False)
     before = {k: strategies[sid].get(k) for k in
@@ -4579,4 +4431,7 @@ def export_bundle_zip():
 
 
 if __name__ == "__main__":
-    app.run(debug=False, port=5001, threaded=True)
+    # Each user instance picks its own port via the PORT env var (default 5001
+    # for the primary/legacy instance).
+    _port = int(os.environ.get("PORT", "5001"))
+    app.run(debug=False, host="127.0.0.1", port=_port, threaded=True)

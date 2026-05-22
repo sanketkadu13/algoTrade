@@ -3,12 +3,7 @@
 *.pem
 *.key
 
-# Multi-user DB (contains Kite credentials)
-data/kite.db
-data/kite.db-wal
-data/kite.db-shm
-
-# Runtime trading data + state snapshots
+# Runtime trading data + state snapshots (per-user; lives in /opt/kite-data-<user>/)
 data/csv/
 data/auctions_state_*.json
 mtm_*.csv

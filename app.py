@@ -4958,8 +4958,11 @@ def _interarb_start_ws():
     kt.on_close     = _interarb_on_close
     kt.on_error     = _interarb_on_error
     kt.on_reconnect = _interarb_on_reconnect
-    # Auto-reconnect with backoff (kiteconnect manages internally)
-    kt.enable_reconnect(reconnect_max_delay=60, reconnect_max_tries=300)
+    # Auto-reconnect: kiteconnect KiteTicker uses these attributes (not a
+    # method) — set on the instance before connect().
+    kt.reconnect             = True
+    kt.reconnect_max_tries   = 300
+    kt.reconnect_max_delay   = 60
     _interarb_ticker = kt
     kt.connect(threaded=True)
 

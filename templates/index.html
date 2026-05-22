@@ -1333,7 +1333,7 @@
   <div id="view-interarb" style="display:none">
 
     <div class="panel" style="margin-top:0">
-      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
         <span>NSE ↔ BSE Same-Share Arbitrage <span id="ia-count" style="color:var(--muted);font-weight:normal">— 0 opps</span></span>
         <div style="display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:11px;color:var(--muted)">
           <span id="ia-ws-state">WS: init</span>
@@ -1341,6 +1341,7 @@
           <span id="ia-universe">universe: 0</span>
           <span>·</span>
           <span id="ia-updated">last update: —</span>
+          <button class="btn-save" id="ia-toggle-btn" onclick="toggleInterarb()" style="width:auto;padding:5px 14px;border-color:var(--red);color:var(--red-hi);margin-left:8px">⏹ Stop</button>
         </div>
       </div>
       <div id="ia-error" style="display:none;background:rgba(248,81,73,.08);border:1px solid var(--red);border-radius:4px;padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--red-hi);margin-top:8px"></div>
@@ -1360,13 +1361,10 @@
         <label style="display:flex;flex-direction:column;gap:4px;align-self:end">
           <span><input type="checkbox" id="ia-paper" checked oninput="this._touched=true"> Paper mode (no real orders)</span>
         </label>
-        <label style="display:flex;flex-direction:column;gap:4px;align-self:end">
-          <span><input type="checkbox" id="ia-active" oninput="this._touched=true"> Master switch (Phase B)</span>
-        </label>
         <button class="btn-save" onclick="saveInterarbConfig()" style="align-self:end;border-color:var(--green);color:var(--green-hi)">Save</button>
       </div>
       <div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:10px;line-height:1.6">
-        ⚠ <strong>Phase A is read-only.</strong> Paper/Live toggles are saved but no orders are placed yet — they wire up in Phase B once you've validated the scanner is showing realistic numbers.
+        ⚠ <strong>Phase A is read-only.</strong> Paper mode is saved but no orders are placed yet — wires up in Phase B once you've validated the scanner. Use <strong>⏹ Stop</strong> in the header to pause the compute loop (WebSocket stays subscribed so resume is instant).
       </div>
     </div>
 
@@ -1412,12 +1410,13 @@
   <div id="view-commarb" style="display:none">
 
     <div class="panel" style="margin-top:0">
-      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
         <span>Commodity Lot-Size Arbitrage (MCX big ↔ mini, same expiry) <span id="ca-count" style="color:var(--muted);font-weight:normal">— 0 opps</span></span>
         <div style="display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:11px;color:var(--muted)">
           <span id="ca-resolved">pairs: 0</span>
           <span>·</span>
           <span id="ca-updated">last update: —</span>
+          <button class="btn-save" id="ca-toggle-btn" onclick="toggleCommarb()" style="width:auto;padding:5px 14px;border-color:var(--red);color:var(--red-hi);margin-left:8px">⏹ Stop</button>
         </div>
       </div>
       <div id="ca-error" style="display:none;background:rgba(248,81,73,.08);border:1px solid var(--red);border-radius:4px;padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--red-hi);margin-top:8px"></div>
@@ -1442,13 +1441,10 @@
         <label style="display:flex;flex-direction:column;gap:4px;align-self:end">
           <span><input type="checkbox" id="ca-paper" checked oninput="this._touched=true"> Paper mode</span>
         </label>
-        <label style="display:flex;flex-direction:column;gap:4px;align-self:end">
-          <span><input type="checkbox" id="ca-active" oninput="this._touched=true"> Master switch (Phase B)</span>
-        </label>
         <button class="btn-save" onclick="saveCommarbConfig()" style="align-self:end;border-color:var(--green);color:var(--green-hi)">Save</button>
       </div>
       <div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:10px;line-height:1.6">
-        ⚠ Phase A is read-only. Trade size is auto-balanced to the LCM of the two lot sizes (e.g. 100 bbl for crude = 1 big + 10 minis minimum).
+        ⚠ Phase A is read-only. Trade size is auto-balanced to the LCM of the two lot sizes (e.g. 100 bbl for crude = 1 big + 10 minis minimum). Use <strong>⏹ Stop</strong> in the header to pause computation.
       </div>
     </div>
 
@@ -2390,14 +2386,24 @@
     set('ia-min-pct', cfg.min_net_pct);
     set('ia-max-qty', cfg.max_qty_per_row);
     const paper = document.getElementById('ia-paper');
-    const active = document.getElementById('ia-active');
     if (paper && !paper._touched)   paper.checked  = !!cfg.paper_mode;
-    if (active && !active._touched) active.checked = !!cfg.active;
+
+    // Start/Stop button reflects current active state
+    const tb = document.getElementById('ia-toggle-btn');
+    if (cfg.active) {
+      tb.textContent = '⏹ Stop';
+      tb.style.borderColor = 'var(--red)';
+      tb.style.color = 'var(--red-hi)';
+    } else {
+      tb.textContent = '▶ Start';
+      tb.style.borderColor = 'var(--green)';
+      tb.style.color = 'var(--green-hi)';
+    }
 
     // Status strip
     const wsColor = ({connected:'var(--green-hi)', connecting:'var(--orange)', reconnecting:'var(--orange)',
                       disconnected:'var(--red-hi)', error:'var(--red-hi)', failed:'var(--red-hi)', init:'var(--dim)'})[status.ws_state] || 'var(--dim)';
-    document.getElementById('ia-ws-state').innerHTML = `WS: <span style="color:${wsColor}">${status.ws_state || 'init'}</span> (${status.subscribed || 0} tokens)`;
+    document.getElementById('ia-ws-state').innerHTML = `WS: <span style="color:${wsColor}">${status.ws_state || 'init'}</span> (${status.subscribed || 0} tokens)` + (cfg.active ? '' : ' · <span style="color:var(--orange)">PAUSED</span>');
     document.getElementById('ia-universe').textContent = `universe: ${d.universe_size || 0}` + (status.skipped ? ` (skipped ${status.skipped})` : '');
     document.getElementById('ia-updated').textContent = 'last update: ' + (d.last_compute_at ? d.last_compute_at.slice(11, 19) : '—');
     document.getElementById('ia-count').textContent = `— ${opps.length} opps`;
@@ -2439,12 +2445,23 @@
       min_net_pct:      parseFloat(document.getElementById('ia-min-pct').value) || 0,
       max_qty_per_row:  parseInt(document.getElementById('ia-max-qty').value) || 5000,
       paper_mode:       document.getElementById('ia-paper').checked,
-      active:           document.getElementById('ia-active').checked,
     };
     await fetch('/interarb/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-    ['ia-min-pct','ia-max-qty','ia-paper','ia-active'].forEach(id => {
+    ['ia-min-pct','ia-max-qty','ia-paper'].forEach(id => {
       const e = document.getElementById(id); if (e) e._touched = false;
     });
+    await loadInterarb();
+  }
+
+  async function toggleInterarb() {
+    // Read current state to know which way to toggle
+    let cur;
+    try { cur = (await (await fetch('/interarb')).json()).config; } catch (e) { return; }
+    const next = !cur.active;
+    if (cur.active) {
+      if (!confirm('Pause the NSE↔BSE scanner?\n\nCompute loop will sleep; WebSocket stays subscribed so resume is instant.')) return;
+    }
+    await fetch('/interarb/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({active: next})});
     await loadInterarb();
   }
 
@@ -2473,12 +2490,22 @@
     set('ca-min-pct', cfg.min_net_pct);
     set('ca-max-lots', cfg.max_lots_big);
     const paper = document.getElementById('ca-paper');
-    const active = document.getElementById('ca-active');
     if (paper && !paper._touched)   paper.checked  = !!cfg.paper_mode;
-    if (active && !active._touched) active.checked = !!cfg.active;
+
+    // Start/Stop button reflects current active state
+    const tb = document.getElementById('ca-toggle-btn');
+    if (cfg.active) {
+      tb.textContent = '⏹ Stop';
+      tb.style.borderColor = 'var(--red)';
+      tb.style.color = 'var(--red-hi)';
+    } else {
+      tb.textContent = '▶ Start';
+      tb.style.borderColor = 'var(--green)';
+      tb.style.color = 'var(--green-hi)';
+    }
 
     // Header strip
-    document.getElementById('ca-resolved').textContent = `pairs: ${status.resolved || 0}`;
+    document.getElementById('ca-resolved').textContent = `pairs: ${status.resolved || 0}` + (cfg.active ? '' : ' · PAUSED');
     document.getElementById('ca-updated').textContent = 'last update: ' + (d.last_compute_at ? d.last_compute_at.slice(11, 19) : '—');
     document.getElementById('ca-count').textContent = `— ${opps.length} opps`;
 
@@ -2534,12 +2561,22 @@
       min_net_pct:   parseFloat(document.getElementById('ca-min-pct').value),
       max_lots_big:  parseInt(document.getElementById('ca-max-lots').value),
       paper_mode:    document.getElementById('ca-paper').checked,
-      active:        document.getElementById('ca-active').checked,
     };
     await fetch('/commarb/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-    ['ca-min-pct','ca-max-lots','ca-paper','ca-active'].forEach(id => {
+    ['ca-min-pct','ca-max-lots','ca-paper'].forEach(id => {
       const e = document.getElementById(id); if (e) e._touched = false;
     });
+    await loadCommarb();
+  }
+
+  async function toggleCommarb() {
+    let cur;
+    try { cur = (await (await fetch('/commarb')).json()).config; } catch (e) { return; }
+    const next = !cur.active;
+    if (cur.active) {
+      if (!confirm('Pause the Commodity Lot scanner?\n\nCompute loop will sleep; WebSocket stays subscribed.')) return;
+    }
+    await fetch('/commarb/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({active: next})});
     await loadCommarb();
   }
 

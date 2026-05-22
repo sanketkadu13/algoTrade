@@ -4758,7 +4758,8 @@ _interarb_config = {
     "min_net_pct":     0.05,    # filter the UI table to rows where net_pct >= this
     "max_qty_per_row": 5000,    # safety cap on guaranteed-fill qty per opportunity
     "paper_mode":      True,    # Phase A: no effect (no orders). Phase B will respect this.
-    "active":          False,   # master switch; Phase B execution will require true.
+    "active":          True,    # master switch: scanner pauses when False. (Phase B will
+                                # also gate order execution on this flag.)
 }
 
 # Live top-of-book depth populated by the KiteTicker thread. Keyed by
@@ -5039,13 +5040,15 @@ def _interarb_compute_opps():
 
 
 def _interarb_compute_loop():
-    """Recompute opportunities every second."""
+    """Recompute opportunities every second. Pauses when active=False —
+    WebSocket stays subscribed so resuming is instant."""
     global _interarb_opps, _interarb_last_compute_at
     while True:
         try:
-            opps = _interarb_compute_opps()
-            _interarb_opps = opps
-            _interarb_last_compute_at = _now_ist().isoformat()
+            if _interarb_config.get("active", True):
+                opps = _interarb_compute_opps()
+                _interarb_opps = opps
+                _interarb_last_compute_at = _now_ist().isoformat()
         except Exception as e:
             print(f"[interarb-compute] {e}")
         time.sleep(1)
@@ -5113,7 +5116,7 @@ _commarb_config = {
     "min_net_pct":          0.05,    # filter
     "max_lots_big":         5,       # safety cap on big-side lots per opportunity
     "paper_mode":           True,
-    "active":               False,
+    "active":               True,    # master switch: scanner pauses when False.
 }
 
 _commarb_pairs:  list = []           # list of pair dicts (from JSON, enriched at boot)
@@ -5373,12 +5376,14 @@ def _commarb_compute_opps() -> list:
 
 
 def _commarb_compute_loop():
+    """Recompute opportunities every second. Pauses when active=False."""
     global _commarb_opps, _commarb_last_compute_at
     while True:
         try:
-            opps = _commarb_compute_opps()
-            _commarb_opps = opps
-            _commarb_last_compute_at = _now_ist().isoformat()
+            if _commarb_config.get("active", True):
+                opps = _commarb_compute_opps()
+                _commarb_opps = opps
+                _commarb_last_compute_at = _now_ist().isoformat()
         except Exception as e:
             print(f"[commarb-compute] {e}")
         time.sleep(1)

@@ -4736,6 +4736,361 @@ def calspread_force_setup_route(underlying: str):
     return jsonify({"ok": True})
 
 
+# ── Inter-Exchange Arbitrage (NSE vs BSE same-share, intraday) — Phase A ─────
+#
+# Reads top-N stocks from data/interarb_universe.json. At boot, resolves each
+# tradingsymbol to its NSE + BSE instrument_token. Subscribes to ALL of them
+# via KiteTicker (WebSocket, mode=full → 5-level depth pushed in real-time).
+#
+# Every second, walks the universe and computes, for each symbol:
+#   sell_nse_buy_bse_edge = nse_best_bid - bse_best_ask  (sell on NSE, buy on BSE)
+#   sell_bse_buy_nse_edge = bse_best_bid - nse_best_ask  (sell on BSE, buy on NSE)
+#   fill_qty              = min(qty on both legs)        (the guaranteed top-of-book qty)
+#   gross_pnl, costs, net_pnl, net_pct                   (Zerodha intraday MIS round-trip)
+#
+# Phase A is READ-ONLY: opportunities are surfaced in the UI; no orders are
+# placed. The paper/live toggle ships disabled by default and is wired to the
+# UI but does nothing until Phase B.
+
+_INTERARB_UNIVERSE_PATH = os.path.join(CODE_DIR, "data", "interarb_universe.json")
+
+_interarb_config = {
+    "min_net_pct":     0.05,    # filter the UI table to rows where net_pct >= this
+    "max_qty_per_row": 5000,    # safety cap on guaranteed-fill qty per opportunity
+    "paper_mode":      True,    # Phase A: no effect (no orders). Phase B will respect this.
+    "active":          False,   # master switch; Phase B execution will require true.
+}
+
+# Live top-of-book depth populated by the KiteTicker thread. Keyed by
+# instrument_token (int). Each entry: bid, bid_qty, ask, ask_qty, ltp, ts.
+_interarb_depth: dict = {}
+_interarb_depth_lock = threading.Lock()
+
+# Symbol → {nse_token, bse_token, lot/lot_size=1 for equity}. Populated once.
+_interarb_symbols: dict = {}     # symbol → {nse_token, bse_token}
+_interarb_tok2sym: dict = {}     # token → (symbol, exchange) — fast reverse lookup
+
+# Live top-N opportunities snapshot (recomputed every second)
+_interarb_opps: list = []
+_interarb_last_compute_at: str = ""
+_interarb_status: dict = {
+    "ws_state":     "init",     # init / connecting / connected / disconnected / failed
+    "ws_last_tick": None,
+    "subscribed":   0,
+    "resolved":     0,
+    "skipped":      0,
+    "boot_error":   None,
+}
+
+
+def _interarb_load_universe() -> list[str]:
+    try:
+        with open(_INTERARB_UNIVERSE_PATH, "r") as f:
+            data = json.load(f)
+        return list(data.get("symbols") or [])
+    except Exception as e:
+        print(f"[interarb-universe] {e}")
+        return []
+
+
+def _interarb_resolve_tokens(symbols: list[str]) -> None:
+    """For each symbol, find its instrument_token on NSE and BSE. Skips
+    symbols not listed on both. Called once at boot."""
+    global _interarb_symbols, _interarb_tok2sym
+    try:
+        nse_inst = kite.instruments("NSE")
+        bse_inst = kite.instruments("BSE")
+    except Exception as e:
+        _interarb_status["boot_error"] = f"instruments() failed: {e}"
+        print(f"[interarb-resolve] {e}")
+        return
+    # Build lookup: tradingsymbol → token (equity only, segment 'EQ' on NSE/BSE)
+    nse_lookup = {}
+    for i in nse_inst:
+        if i.get("instrument_type") == "EQ" and i.get("segment") in ("NSE",):
+            nse_lookup[i["tradingsymbol"]] = i["instrument_token"]
+    bse_lookup = {}
+    for i in bse_inst:
+        if i.get("instrument_type") == "EQ" and i.get("segment") in ("BSE",):
+            bse_lookup[i["tradingsymbol"]] = i["instrument_token"]
+    resolved = {}
+    skipped  = []
+    for sym in symbols:
+        n = nse_lookup.get(sym)
+        b = bse_lookup.get(sym)
+        if n and b:
+            resolved[sym] = {"nse_token": n, "bse_token": b}
+        else:
+            skipped.append((sym, bool(n), bool(b)))
+    _interarb_symbols = resolved
+    _interarb_tok2sym = {}
+    for sym, t in resolved.items():
+        _interarb_tok2sym[t["nse_token"]] = (sym, "NSE")
+        _interarb_tok2sym[t["bse_token"]] = (sym, "BSE")
+    _interarb_status["resolved"] = len(resolved)
+    _interarb_status["skipped"]  = len(skipped)
+    print(f"[interarb-resolve] resolved={len(resolved)} skipped={len(skipped)}")
+    if skipped:
+        # Show first few; helpful for debugging the universe file
+        sample = ", ".join(s for s, _, _ in skipped[:5])
+        print(f"[interarb-resolve] sample skipped: {sample}")
+
+
+# ── Zerodha intraday MIS round-trip cost (₹) ─────────────────────────────────
+def _interarb_intraday_cost(buy_value: float, sell_value: float, qty: int) -> dict:
+    """Per Zerodha equity intraday MIS charges. Both legs are intraday so
+    NO delivery STT (which is 0.1%). MIS STT is 0.025% on sell side only."""
+    if buy_value <= 0 or sell_value <= 0 or qty <= 0:
+        return {"total": 0.0, "stt": 0, "exch": 0, "sebi": 0, "stamp": 0,
+                "ipft": 0, "gst": 0, "brokerage": 0}
+    # STT 0.025% on sell-side only (intraday)
+    stt = sell_value * 0.00025
+    # Exchange transaction charges (NSE ~0.00297%, BSE ~0.00375%) per leg.
+    # We pay roughly the average across both legs since one leg is on each.
+    exch = (buy_value * 0.0000375) + (sell_value * 0.0000297)
+    # SEBI fee: ₹10 per crore both sides
+    sebi = (buy_value + sell_value) * 0.000001
+    # Stamp duty: 0.003% on buy side, intraday equity
+    stamp = buy_value * 0.00003
+    # IPFT: NSE 0.0001%, BSE 0.0001% (charged on both sides on respective exchange)
+    ipft  = (buy_value + sell_value) * 0.000001
+    # Zerodha brokerage: ₹20/leg or 0.03% (lower) for intraday — 2 legs
+    brokerage = min(20.0, buy_value  * 0.0003) + min(20.0, sell_value * 0.0003)
+    # GST: 18% on (brokerage + exch + sebi + ipft)
+    gst = (brokerage + exch + sebi + ipft) * 0.18
+    total = stt + exch + sebi + stamp + ipft + gst + brokerage
+    return {
+        "stt":       round(stt, 2),
+        "exch":      round(exch, 2),
+        "sebi":      round(sebi, 2),
+        "stamp":     round(stamp, 2),
+        "ipft":      round(ipft, 2),
+        "gst":       round(gst, 2),
+        "brokerage": round(brokerage, 2),
+        "total":     round(total, 2),
+    }
+
+
+# ── KiteTicker (WebSocket) — pushed depth ────────────────────────────────────
+_interarb_ticker = None
+_interarb_ws_thread = None
+
+def _interarb_on_ticks(ws, ticks):
+    """Each tick has keys: instrument_token, last_price, depth (in 'full' mode)."""
+    now_iso = _now_ist().isoformat()
+    with _interarb_depth_lock:
+        for t in ticks:
+            tok = t.get("instrument_token")
+            if not tok:
+                continue
+            depth = t.get("depth") or {}
+            buy_levels  = depth.get("buy")  or []
+            sell_levels = depth.get("sell") or []
+            best_bid     = float(buy_levels[0]["price"])    if buy_levels  else 0.0
+            best_bid_qty = int(buy_levels[0]["quantity"])   if buy_levels  else 0
+            best_ask     = float(sell_levels[0]["price"])   if sell_levels else 0.0
+            best_ask_qty = int(sell_levels[0]["quantity"])  if sell_levels else 0
+            _interarb_depth[tok] = {
+                "bid":     best_bid,
+                "bid_qty": best_bid_qty,
+                "ask":     best_ask,
+                "ask_qty": best_ask_qty,
+                "ltp":     float(t.get("last_price") or 0),
+                "ts":      now_iso,
+            }
+    _interarb_status["ws_last_tick"] = now_iso
+
+
+def _interarb_on_connect(ws, response):
+    """When the WebSocket connects, subscribe + set mode for all resolved tokens."""
+    _interarb_status["ws_state"] = "connected"
+    tokens = []
+    for sym, t in _interarb_symbols.items():
+        tokens.append(t["nse_token"])
+        tokens.append(t["bse_token"])
+    # Subscribe in chunks of 1000 (Kite's per-subscribe message cap)
+    chunk = 800
+    for i in range(0, len(tokens), chunk):
+        batch = tokens[i:i + chunk]
+        ws.subscribe(batch)
+        ws.set_mode(ws.MODE_FULL, batch)
+    _interarb_status["subscribed"] = len(tokens)
+    print(f"[interarb-ws] connected, subscribed {len(tokens)} tokens in FULL mode")
+
+
+def _interarb_on_close(ws, code, reason):
+    _interarb_status["ws_state"] = "disconnected"
+    print(f"[interarb-ws] closed code={code} reason={reason}")
+
+
+def _interarb_on_error(ws, code, reason):
+    _interarb_status["ws_state"] = "error"
+    print(f"[interarb-ws] error code={code} reason={reason}")
+
+
+def _interarb_on_reconnect(ws, attempts):
+    _interarb_status["ws_state"] = "reconnecting"
+    print(f"[interarb-ws] reconnecting, attempt {attempts}")
+
+
+def _interarb_start_ws():
+    """Build + start a KiteTicker. The kiteconnect library handles its own
+    auto-reconnect (built-in exponential backoff) so we just spin it up."""
+    global _interarb_ticker
+    try:
+        from kiteconnect import KiteTicker
+    except Exception as e:
+        _interarb_status["ws_state"] = "failed"
+        _interarb_status["boot_error"] = f"KiteTicker import: {e}"
+        return
+    if not API_KEY or not ACCESS_TOKEN:
+        _interarb_status["ws_state"] = "failed"
+        _interarb_status["boot_error"] = "missing API_KEY / ACCESS_TOKEN"
+        return
+    if not _interarb_symbols:
+        _interarb_status["ws_state"] = "failed"
+        _interarb_status["boot_error"] = "no resolved symbols"
+        return
+    _interarb_status["ws_state"] = "connecting"
+    kt = KiteTicker(API_KEY, ACCESS_TOKEN)
+    kt.on_ticks     = _interarb_on_ticks
+    kt.on_connect   = _interarb_on_connect
+    kt.on_close     = _interarb_on_close
+    kt.on_error     = _interarb_on_error
+    kt.on_reconnect = _interarb_on_reconnect
+    # Auto-reconnect with backoff (kiteconnect manages internally)
+    kt.enable_reconnect(reconnect_max_delay=60, reconnect_max_tries=300)
+    _interarb_ticker = kt
+    kt.connect(threaded=True)
+
+
+# ── Opportunity scanner: recompute every second ──────────────────────────────
+def _interarb_compute_opps():
+    """For every resolved symbol, compute both directions of arb. Return the
+    top opportunities sorted by net_pct descending."""
+    cfg = _interarb_config
+    cap_qty = int(cfg.get("max_qty_per_row") or 5000)
+    min_net_pct = float(cfg.get("min_net_pct") or 0.0)
+    rows = []
+    with _interarb_depth_lock:
+        depth_snapshot = dict(_interarb_depth)
+    for sym, toks in _interarb_symbols.items():
+        nse = depth_snapshot.get(toks["nse_token"]) or {}
+        bse = depth_snapshot.get(toks["bse_token"]) or {}
+        nse_bid     = nse.get("bid")     or 0
+        nse_bid_qty = nse.get("bid_qty") or 0
+        nse_ask     = nse.get("ask")     or 0
+        nse_ask_qty = nse.get("ask_qty") or 0
+        bse_bid     = bse.get("bid")     or 0
+        bse_bid_qty = bse.get("bid_qty") or 0
+        bse_ask     = bse.get("ask")     or 0
+        bse_ask_qty = bse.get("ask_qty") or 0
+        nse_ltp     = nse.get("ltp")     or 0
+        bse_ltp     = bse.get("ltp")     or 0
+
+        # Direction 1: sell NSE, buy BSE → profit if nse_bid > bse_ask
+        for direction, sell_px, sell_qty, buy_px, buy_qty, sell_exch, buy_exch in (
+            ("sell_nse_buy_bse", nse_bid, nse_bid_qty, bse_ask, bse_ask_qty, "NSE", "BSE"),
+            ("sell_bse_buy_nse", bse_bid, bse_bid_qty, nse_ask, nse_ask_qty, "BSE", "NSE"),
+        ):
+            if sell_px <= 0 or buy_px <= 0 or sell_qty <= 0 or buy_qty <= 0:
+                continue
+            edge = sell_px - buy_px
+            if edge <= 0:
+                continue
+            fill_qty = min(sell_qty, buy_qty, cap_qty)
+            if fill_qty <= 0:
+                continue
+            buy_value  = buy_px  * fill_qty
+            sell_value = sell_px * fill_qty
+            cost = _interarb_intraday_cost(buy_value, sell_value, fill_qty)
+            gross = edge * fill_qty
+            net   = gross - cost["total"]
+            notional = (buy_value + sell_value) / 2.0
+            net_pct  = (net / notional * 100) if notional > 0 else 0.0
+            if net_pct < min_net_pct:
+                continue
+            rows.append({
+                "symbol":       sym,
+                "direction":    direction,
+                "sell_exch":    sell_exch,
+                "buy_exch":     buy_exch,
+                "sell_price":   round(sell_px, 2),
+                "buy_price":    round(buy_px, 2),
+                "sell_qty_top": sell_qty,
+                "buy_qty_top":  buy_qty,
+                "fill_qty":     fill_qty,
+                "edge_pts":     round(edge, 2),
+                "gross_pnl":    round(gross, 2),
+                "cost_total":   cost["total"],
+                "net_pnl":      round(net, 2),
+                "net_pct":      round(net_pct, 4),
+                "nse_bid":      nse_bid,   "nse_ask": nse_ask,
+                "nse_bid_qty":  nse_bid_qty, "nse_ask_qty": nse_ask_qty,
+                "bse_bid":      bse_bid,   "bse_ask": bse_ask,
+                "bse_bid_qty":  bse_bid_qty, "bse_ask_qty": bse_ask_qty,
+                "nse_ltp":      nse_ltp,   "bse_ltp": bse_ltp,
+            })
+    rows.sort(key=lambda r: -r["net_pct"])
+    return rows
+
+
+def _interarb_compute_loop():
+    """Recompute opportunities every second."""
+    global _interarb_opps, _interarb_last_compute_at
+    while True:
+        try:
+            opps = _interarb_compute_opps()
+            _interarb_opps = opps
+            _interarb_last_compute_at = _now_ist().isoformat()
+        except Exception as e:
+            print(f"[interarb-compute] {e}")
+        time.sleep(1)
+
+
+# ── Boot: resolve tokens + start WS + start compute loop ─────────────────────
+def _interarb_boot():
+    syms = _interarb_load_universe()
+    if not syms:
+        _interarb_status["boot_error"] = "universe file missing or empty"
+        return
+    _interarb_resolve_tokens(syms)
+    if not _interarb_symbols:
+        _interarb_status["boot_error"] = "no symbols resolved (token lookup failed?)"
+        return
+    _interarb_start_ws()
+    threading.Thread(target=_interarb_compute_loop, daemon=True).start()
+
+# Run boot in a thread so it doesn't block startup if instruments() is slow
+threading.Thread(target=_interarb_boot, daemon=True).start()
+
+
+# ── Routes ──────────────────────────────────────────────────────────────────
+@app.route("/interarb", methods=["GET"])
+def interarb_route():
+    """Returns current top opportunities + config + ws status."""
+    return jsonify({
+        "ok":             True,
+        "config":         dict(_interarb_config),
+        "status":         dict(_interarb_status),
+        "opportunities":  list(_interarb_opps),
+        "last_compute_at": _interarb_last_compute_at,
+        "universe_size":  len(_interarb_symbols),
+    })
+
+
+@app.route("/interarb/config", methods=["POST"])
+def interarb_config_route():
+    d = request.json or {}
+    for k in ("min_net_pct", "max_qty_per_row"):
+        if k in d:
+            try: _interarb_config[k] = float(d[k]) if k == "min_net_pct" else int(d[k])
+            except Exception: pass
+    if "paper_mode" in d: _interarb_config["paper_mode"] = bool(d["paper_mode"])
+    if "active" in d:     _interarb_config["active"]     = bool(d["active"])
+    return jsonify({"ok": True, "config": dict(_interarb_config)})
+
+
 # ── Admin / onboarding ────────────────────────────────────────────────────────
 # Lets the primary user (ADMIN_ENABLED=true in their .env) generate invite
 # links, list active users, and remove users. Onboarding is handled by a

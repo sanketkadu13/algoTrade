@@ -672,6 +672,7 @@
       <button id="vt-arb"        class="vt-btn"           onclick="switchView('arb')">⚖ Arb</button>
       <button id="vt-auctions"   class="vt-btn"           onclick="switchView('auctions')">🔨 Auctions</button>
       <button id="vt-straddle"   class="vt-btn"           onclick="switchView('straddle')">🎯 Straddle</button>
+      <button id="vt-interarb"   class="vt-btn"           onclick="switchView('interarb')">🔁 NSE↔BSE</button>
       <button id="vt-admin"      class="vt-btn"           onclick="switchView('admin')" style="display:none">👥 Admin</button>
     </div>
 
@@ -1327,6 +1328,85 @@
 
   </div>
 
+  <!-- ═══════════════════════════════ INTER-EXCHANGE VIEW ═══════════════════════ -->
+  <div id="view-interarb" style="display:none">
+
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>NSE ↔ BSE Same-Share Arbitrage <span id="ia-count" style="color:var(--muted);font-weight:normal">— 0 opps</span></span>
+        <div style="display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:11px;color:var(--muted)">
+          <span id="ia-ws-state">WS: init</span>
+          <span>·</span>
+          <span id="ia-universe">universe: 0</span>
+          <span>·</span>
+          <span id="ia-updated">last update: —</span>
+        </div>
+      </div>
+      <div id="ia-error" style="display:none;background:rgba(248,81,73,.08);border:1px solid var(--red);border-radius:4px;padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--red-hi);margin-top:8px"></div>
+    </div>
+
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title">Filters &amp; Mode</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;font-family:var(--mono);font-size:12px;align-items:end">
+        <label style="display:flex;flex-direction:column;gap:4px">
+          Min net % to show
+          <input type="number" id="ia-min-pct" step="0.01" min="0" value="0.05" oninput="this._touched=true">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          Max qty per row (cap)
+          <input type="number" id="ia-max-qty" step="500" min="1" value="5000" oninput="this._touched=true">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;align-self:end">
+          <span><input type="checkbox" id="ia-paper" checked oninput="this._touched=true"> Paper mode (no real orders)</span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;align-self:end">
+          <span><input type="checkbox" id="ia-active" oninput="this._touched=true"> Master switch (Phase B)</span>
+        </label>
+        <button class="btn-save" onclick="saveInterarbConfig()" style="align-self:end;border-color:var(--green);color:var(--green-hi)">Save</button>
+      </div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:10px;line-height:1.6">
+        ⚠ <strong>Phase A is read-only.</strong> Paper/Live toggles are saved but no orders are placed yet — they wire up in Phase B once you've validated the scanner is showing realistic numbers.
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title">Live Opportunities (sorted by net %)</div>
+      <div style="overflow-x:auto">
+        <table class="arb-table" id="ia-table" style="min-width:1200px">
+          <thead>
+            <tr style="font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">
+              <th style="text-align:left">Symbol</th>
+              <th style="text-align:center">Direction</th>
+              <th style="text-align:right">Sell @<br>(qty)</th>
+              <th style="text-align:right">Buy @<br>(qty)</th>
+              <th style="text-align:right">Edge pts</th>
+              <th style="text-align:right">Fill qty</th>
+              <th style="text-align:right">Gross ₹</th>
+              <th style="text-align:right">Cost ₹</th>
+              <th style="text-align:right">Net ₹</th>
+              <th style="text-align:right">Net %</th>
+              <th style="text-align:right">NSE LTP / BSE LTP</th>
+            </tr>
+          </thead>
+          <tbody id="ia-tbody"></tbody>
+        </table>
+      </div>
+      <div id="ia-empty" style="font-family:var(--mono);font-size:12px;color:var(--dim);text-align:center;padding:20px 0">
+        No opportunities above the threshold yet. Either the WebSocket is still connecting, or no live spread crosses the cost floor right now.
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:0;background:rgba(227,179,65,.05);border-color:var(--orange)">
+      <div class="panel-title" style="color:var(--orange)">⚠ Reality check</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.7">
+        <strong>HFTs capture most NSE↔BSE arbitrage in microseconds.</strong> Even with WebSocket pushing ticks sub-second, the two-leg REST order placement adds ~500ms of latency. Opportunities you see will mostly evaporate before two orders can fill. Expected outcome: this table is mostly empty, with occasional fleeting greens during volatile opens or news events.
+        <br><br>
+        <strong>Fill quantity shown is the top-of-book qty</strong> on both exchanges at the moment of compute. Actual fills will depend on order types, latency, and other participants moving the book between snapshot and execution.
+      </div>
+    </div>
+
+  </div>
+
   <!-- ═══════════════════════════════ ADMIN VIEW ════════════════════════════════ -->
   <!-- Only ever shown when /admin/state returns 200 (i.e., this instance has ADMIN_ENABLED=true) -->
   <div id="view-admin" style="display:none">
@@ -1697,12 +1777,14 @@
     document.getElementById('view-arb').style.display        = (v === 'arb')        ? '' : 'none';
     document.getElementById('view-auctions').style.display   = (v === 'auctions')   ? '' : 'none';
     document.getElementById('view-straddle').style.display    = (v === 'straddle')   ? '' : 'none';
+    document.getElementById('view-interarb').style.display    = (v === 'interarb')   ? '' : 'none';
     document.getElementById('view-admin').style.display       = (v === 'admin')      ? '' : 'none';
     document.getElementById('vt-strategies').classList.toggle('vt-active', v === 'strategies');
     document.getElementById('vt-scheduled').classList.toggle('vt-active', v === 'scheduled');
     document.getElementById('vt-arb').classList.toggle('vt-active', v === 'arb');
     document.getElementById('vt-auctions').classList.toggle('vt-active', v === 'auctions');
     document.getElementById('vt-straddle').classList.toggle('vt-active', v === 'straddle');
+    document.getElementById('vt-interarb').classList.toggle('vt-active', v === 'interarb');
     document.getElementById('vt-admin').classList.toggle('vt-active', v === 'admin');
     // Re-render tabs with new filter
     if (lastData?.strategies) renderTabs(lastData.strategies, lastData.strategy_order || []);
@@ -1723,6 +1805,9 @@
     }
     if (v === 'straddle') {
       loadStraddle();
+    }
+    if (v === 'interarb') {
+      loadInterarb();
     }
     if (v === 'admin') {
       loadAdmin();
@@ -2198,6 +2283,89 @@
   setInterval(() => {
     if (currentView === 'admin') loadAdmin();
   }, 5000);
+
+  // ── Inter-Exchange (NSE ↔ BSE) ───────────────────────────────────────────
+  async function loadInterarb() {
+    try {
+      const r = await fetch('/interarb');
+      if (!r.ok) return;
+      const d = await r.json();
+      renderInterarb(d);
+    } catch (e) {}
+  }
+
+  function renderInterarb(d) {
+    const cfg = d.config || {};
+    const status = d.status || {};
+    const opps = d.opportunities || [];
+
+    // Config inputs respect _touched
+    const set = (id, v) => { const e = document.getElementById(id); if (e && !e._touched && v !== undefined && v !== null) e.value = v; };
+    set('ia-min-pct', cfg.min_net_pct);
+    set('ia-max-qty', cfg.max_qty_per_row);
+    const paper = document.getElementById('ia-paper');
+    const active = document.getElementById('ia-active');
+    if (paper && !paper._touched)   paper.checked  = !!cfg.paper_mode;
+    if (active && !active._touched) active.checked = !!cfg.active;
+
+    // Status strip
+    const wsColor = ({connected:'var(--green-hi)', connecting:'var(--orange)', reconnecting:'var(--orange)',
+                      disconnected:'var(--red-hi)', error:'var(--red-hi)', failed:'var(--red-hi)', init:'var(--dim)'})[status.ws_state] || 'var(--dim)';
+    document.getElementById('ia-ws-state').innerHTML = `WS: <span style="color:${wsColor}">${status.ws_state || 'init'}</span> (${status.subscribed || 0} tokens)`;
+    document.getElementById('ia-universe').textContent = `universe: ${d.universe_size || 0}` + (status.skipped ? ` (skipped ${status.skipped})` : '');
+    document.getElementById('ia-updated').textContent = 'last update: ' + (d.last_compute_at ? d.last_compute_at.slice(11, 19) : '—');
+    document.getElementById('ia-count').textContent = `— ${opps.length} opps`;
+
+    const errEl = document.getElementById('ia-error');
+    if (status.boot_error) { errEl.textContent = '⚠ ' + status.boot_error; errEl.style.display = ''; }
+    else                   { errEl.style.display = 'none'; }
+
+    // Table
+    const tbody = document.getElementById('ia-tbody');
+    const empty = document.getElementById('ia-empty');
+    if (!opps.length) {
+      tbody.innerHTML = '';
+      empty.style.display = '';
+      return;
+    }
+    empty.style.display = 'none';
+    tbody.innerHTML = opps.slice(0, 100).map(o => {
+      const netColor = o.net_pct >= 0.10 ? 'var(--green-hi)' : (o.net_pct >= 0.05 ? 'var(--orange)' : 'var(--muted)');
+      const dirLabel = o.direction === 'sell_nse_buy_bse' ? 'sell NSE → buy BSE' : 'sell BSE → buy NSE';
+      return `<tr style="font-family:var(--mono);font-size:12px">
+        <td><strong>${o.symbol}</strong></td>
+        <td style="text-align:center;color:var(--dim)">${dirLabel}</td>
+        <td style="text-align:right">${o.sell_exch} ₹${o.sell_price.toFixed(2)}<br><span style="color:var(--dim);font-size:10px">qty ${o.sell_qty_top}</span></td>
+        <td style="text-align:right">${o.buy_exch} ₹${o.buy_price.toFixed(2)}<br><span style="color:var(--dim);font-size:10px">qty ${o.buy_qty_top}</span></td>
+        <td style="text-align:right">${o.edge_pts.toFixed(2)}</td>
+        <td style="text-align:right">${o.fill_qty}</td>
+        <td style="text-align:right">₹${o.gross_pnl.toFixed(0)}</td>
+        <td style="text-align:right;color:var(--dim)">₹${o.cost_total.toFixed(0)}</td>
+        <td style="text-align:right;color:${netColor};font-weight:700">₹${o.net_pnl.toFixed(0)}</td>
+        <td style="text-align:right;color:${netColor};font-weight:700">${o.net_pct.toFixed(3)}%</td>
+        <td style="text-align:right;color:var(--dim);font-size:11px">${o.nse_ltp ? o.nse_ltp.toFixed(2) : '—'} / ${o.bse_ltp ? o.bse_ltp.toFixed(2) : '—'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function saveInterarbConfig() {
+    const payload = {
+      min_net_pct:      parseFloat(document.getElementById('ia-min-pct').value) || 0,
+      max_qty_per_row:  parseInt(document.getElementById('ia-max-qty').value) || 5000,
+      paper_mode:       document.getElementById('ia-paper').checked,
+      active:           document.getElementById('ia-active').checked,
+    };
+    await fetch('/interarb/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    ['ia-min-pct','ia-max-qty','ia-paper','ia-active'].forEach(id => {
+      const e = document.getElementById(id); if (e) e._touched = false;
+    });
+    await loadInterarb();
+  }
+
+  // 1Hz refresh while the view is open — matches the server's compute cadence
+  setInterval(() => {
+    if (currentView === 'interarb') loadInterarb();
+  }, 1000);
 
   // ── Arb Monitor ──────────────────────────────────────────────────────────
   async function loadArbConfig() {

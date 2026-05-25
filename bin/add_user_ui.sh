@@ -37,7 +37,9 @@ fi
 : "${DASH_PASSWORD:?DASH_PASSWORD required}"
 : "${API_KEY:?API_KEY required}"
 : "${API_SECRET:?API_SECRET required}"
-: "${ACCESS_TOKEN:?ACCESS_TOKEN required}"
+# ACCESS_TOKEN is OPTIONAL — invitees can leave it blank at signup and
+# generate one from their dashboard's Refresh Token modal at first login.
+ACCESS_TOKEN="${ACCESS_TOKEN:-}"
 
 # ── Validate slug
 if ! [[ "${SLUG}" =~ ^[a-z0-9-]+$ ]]; then

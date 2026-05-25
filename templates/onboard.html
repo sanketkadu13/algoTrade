@@ -83,10 +83,7 @@
 
         <label>Kite API secret <span style="color:var(--red-hi)">*</span></label>
         <input type="password" id="f-api-secret" autocomplete="off">
-
-        <label>Today's access token <span style="color:var(--red-hi)">*</span></label>
-        <input type="text" id="f-access-token" autocomplete="off">
-        <div class="help">Generate at developers.kite.trade → click your app → "Generate token". Or paste a request_token redirect URL and we'll extract.</div>
+        <div class="help">You don't need to provide today's access token here — once your dashboard is provisioned, log in and click "Refresh Token" to generate one. The auto-refresh fields below let the dashboard regenerate it for you each morning.</div>
 
         <details style="margin-top:18px">
           <summary style="cursor:pointer;font-size:11px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase">Auto-refresh credentials (optional)</summary>
@@ -136,14 +133,13 @@
       dash_password:    document.getElementById('f-dash-pwd').value,
       api_key:          document.getElementById('f-api-key').value.trim(),
       api_secret:       document.getElementById('f-api-secret').value.trim(),
-      access_token:     document.getElementById('f-access-token').value.trim(),
       kite_user_id:     (document.getElementById('f-kite-uid') || {}).value || '',
       kite_password:    (document.getElementById('f-kite-pwd') || {}).value || '',
       totp_secret:      (document.getElementById('f-totp') || {}).value || '',
       telegram_token:   (document.getElementById('f-tg-token') || {}).value || '',
       telegram_chat_id: (document.getElementById('f-tg-chat') || {}).value || '',
     };
-    if (!payload.slug || !payload.dash_password || !payload.api_key || !payload.api_secret || !payload.access_token) {
+    if (!payload.slug || !payload.dash_password || !payload.api_key || !payload.api_secret) {
       setStatus('Fill in all required fields.', 'err');
       return;
     }
@@ -152,7 +148,7 @@
       return;
     }
     btn.disabled = true;
-    setStatus('Validating Kite credentials, then provisioning your dashboard… (~10s)');
+    setStatus('Provisioning your dashboard… (~5s)');
     try {
       const r = await fetch('/onboard/submit', {
         method: 'POST',

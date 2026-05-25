@@ -5689,16 +5689,21 @@ def onboard_submit_route():
         return jsonify({"ok": False, "error": f"slug '{slug}' is reserved"}), 400
     if len(dash_password) < 6:
         return jsonify({"ok": False, "error": "dashboard password must be at least 6 chars"}), 400
-    if not (api_key and api_secret and access_token):
-        return jsonify({"ok": False, "error": "Kite API key, secret, and access token are required"}), 400
+    if not (api_key and api_secret):
+        return jsonify({"ok": False, "error": "Kite API key and secret are required"}), 400
 
-    # ── Validate creds against Kite before provisioning
-    try:
-        k = KiteConnect(api_key=api_key)
-        k.set_access_token(access_token)
-        profile = k.profile()
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"Kite credential check failed: {e}"}), 400
+    # ── Validate creds against Kite if an access token was provided. If the
+    # invitee skipped the access token field, we trust the api_key+secret are
+    # right and let them generate a fresh access token from their dashboard's
+    # "Refresh Token" modal at first login.
+    profile = {}
+    if access_token:
+        try:
+            k = KiteConnect(api_key=api_key)
+            k.set_access_token(access_token)
+            profile = k.profile()
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"Kite credential check failed: {e}"}), 400
 
     # ── Provision via sudo script
     env = {
@@ -5707,7 +5712,7 @@ def onboard_submit_route():
         "DASH_PASSWORD":    dash_password,
         "API_KEY":          api_key,
         "API_SECRET":       api_secret,
-        "ACCESS_TOKEN":     access_token,
+        "ACCESS_TOKEN":     access_token or "",
         "KITE_USER_ID":     kite_user_id or profile.get("user_id") or "",
         "KITE_PASSWORD":    kite_password or "",
         "KITE_TOTP_SECRET": totp_secret or "",

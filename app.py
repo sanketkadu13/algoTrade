@@ -1614,7 +1614,8 @@ def logout_route():
     This route is allowed through nginx without auth (location bypass), so
     Flask actually receives the request and renders this page.
     """
-    realm = f"Kite Monitor — signed out {_now_ist().strftime('%H:%M:%S')}"
+    # WWW-Authenticate header is latin-1 only — no em-dash. Plain hyphen.
+    realm = f"Kite Monitor - signed out {_now_ist().strftime('%H:%M:%S')}"
     body = """
     <!doctype html><html><head><meta charset="utf-8"><title>Signed out</title>
     <style>

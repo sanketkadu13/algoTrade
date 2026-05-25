@@ -2252,6 +2252,42 @@
     if (currentView === 'straddle') loadStraddle();
   }, 2000);
 
+  // Clipboard helper — works on plain HTTP (where navigator.clipboard is
+  // blocked) via a hidden textarea + execCommand fallback.
+  function copyToClipboard(text, btnEl, doneLabel, restoreLabel) {
+    const done = () => {
+      if (btnEl) {
+        btnEl.textContent = doneLabel || 'Copied ✓';
+        setTimeout(() => { btnEl.textContent = restoreLabel || 'Copy'; }, 1500);
+      }
+    };
+    const fail = (e) => {
+      console.error('copy failed', e);
+      if (btnEl) {
+        btnEl.textContent = '✗ Copy failed — select & ⌘C';
+        setTimeout(() => { btnEl.textContent = restoreLabel || 'Copy'; }, 2500);
+      }
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(done).catch(fail);
+      return;
+    }
+    // HTTP fallback
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = 0; ta.style.left = 0;
+      ta.style.opacity = 0;
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) done(); else fail('execCommand returned false');
+    } catch (e) { fail(e); }
+  }
+
   // ── Admin / onboarding ────────────────────────────────────────────────────
   // Probe /admin/state once on boot — if the instance has ADMIN_ENABLED, show
   // the sidebar tab; otherwise the button stays hidden forever.
@@ -2309,7 +2345,7 @@
             <div style="font-size:10px;color:var(--dim);margin-top:4px;word-break:break-all"><a href="${url}" target="_blank" style="color:var(--blue);text-decoration:none">${url}</a></div>
           </div>
           <div style="display:flex;gap:6px">
-            <button class="btn-save" onclick="navigator.clipboard.writeText('${url}'); this.textContent='Copied ✓'; setTimeout(()=>this.textContent='Copy',1500)" style="border-color:var(--blue);color:var(--blue);width:auto;padding:4px 10px;font-size:11px">Copy</button>
+            <button class="btn-save" onclick="copyToClipboard('${url}', this, 'Copied ✓', 'Copy')" style="border-color:var(--blue);color:var(--blue);width:auto;padding:4px 10px;font-size:11px">Copy</button>
             <button class="btn-save" onclick="adminRevokeInvite('${i.token}')" style="border-color:var(--red);color:var(--red);width:auto;padding:4px 10px;font-size:11px">Revoke</button>
           </div>
         </div>`;
@@ -2336,7 +2372,7 @@
         <strong style="color:var(--green-hi)">✓ Link ready</strong>
         <div style="margin-top:8px;word-break:break-all"><a href="${d.url}" target="_blank" style="color:var(--blue);text-decoration:none">${d.url}</a></div>
         <div style="margin-top:8px;display:flex;gap:8px">
-          <button class="btn-save" onclick="navigator.clipboard.writeText('${d.url}'); this.textContent='Copied ✓'; setTimeout(()=>this.textContent='Copy link',1500)" style="border-color:var(--blue);color:var(--blue);width:auto;padding:4px 12px">Copy link</button>
+          <button class="btn-save" onclick="copyToClipboard('${d.url}', this, 'Copied ✓', 'Copy link')" style="border-color:var(--blue);color:var(--blue);width:auto;padding:4px 12px">Copy link</button>
         </div>
         <div style="margin-top:8px;font-size:10px;color:var(--dim)">Expires ${d.expires_at.slice(0,16).replace('T',' ')}. Send this to the person you're onboarding — one-time use.</div>
       </div>`;

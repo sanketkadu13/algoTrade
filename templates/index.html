@@ -697,6 +697,10 @@
       <span class="theme-toggle-icon">🔑</span>
       <span>Refresh Token</span>
     </button>
+    <button class="theme-toggle" onclick="signOut()" style="border-color:var(--red);color:var(--red-hi)">
+      <span class="theme-toggle-icon">🚪</span>
+      <span>Sign Out</span>
+    </button>
     <button class="theme-toggle" onclick="toggleTheme()" id="theme-toggle-btn">
       <span class="theme-toggle-icon" id="theme-icon">☀</span>
       <span id="theme-label">Light mode</span>
@@ -1602,6 +1606,17 @@
     if (!icon || !label) return;
     if (theme === 'light') { icon.textContent = '☾'; label.textContent = 'Dark mode'; }
     else                   { icon.textContent = '☀'; label.textContent = 'Light mode'; }
+  }
+  function signOut() {
+    const msg = "Sign out and clear basic-auth credentials?\n\n" +
+                "Important: after the signed-out page loads, you must " +
+                "CLOSE ALL TABS of this site (or use a fresh incognito window) " +
+                "to fully clear the cached credentials. HTTP Basic Auth doesn't " +
+                "have a programmatic logout — this is a browser limitation.";
+    if (!confirm(msg)) return;
+    // Navigate to /logout which returns 401 with a new realm so the browser
+    // stops auto-resending the cached creds for the original realm.
+    window.location.href = '/logout';
   }
   function toggleTheme() {
     const cur = document.documentElement.getAttribute('data-theme') || 'dark';

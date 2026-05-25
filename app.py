@@ -1600,6 +1600,45 @@ threading.Thread(target=_telegram_bot_loop, daemon=True).start()
 def index():
     return render_template("index.html")
 
+
+@app.route("/logout")
+def logout_route():
+    """Sign out for HTTP Basic Auth — best-effort.
+
+    Browsers cache basic-auth credentials per realm and there's no API to
+    clear them. The closest we can get is responding with HTTP 401 and a
+    DIFFERENT realm string so the browser stops auto-resending the cached
+    creds for the original realm. Most browsers will then prompt again
+    on the next request to /.
+
+    This route is allowed through nginx without auth (location bypass), so
+    Flask actually receives the request and renders this page.
+    """
+    realm = f"Kite Monitor — signed out {_now_ist().strftime('%H:%M:%S')}"
+    body = """
+    <!doctype html><html><head><meta charset="utf-8"><title>Signed out</title>
+    <style>
+      body { background: #0d1117; color: #e6edf3; font-family: "Comic Sans MS", cursive; margin: 0; padding: 60px 20px; text-align: center; }
+      .card { max-width: 480px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 30px; }
+      h1 { color: #3fb950; font-size: 22px; margin: 0 0 10px 0; }
+      p { color: #8b949e; font-size: 13px; line-height: 1.6; }
+      .hint { background: rgba(227,179,65,.08); border: 1px solid #e3b341; border-radius: 6px; padding: 12px; color: #e3b341; font-size: 12px; margin-top: 18px; }
+      a.btn { display: inline-block; margin-top: 18px; padding: 10px 22px; background: transparent; border: 1px solid #58a6ff; color: #58a6ff; border-radius: 4px; text-decoration: none; font-size: 13px; }
+    </style></head><body>
+      <div class="card">
+        <h1>✓ Signed out</h1>
+        <p>Your basic-auth credentials have been invalidated for this session.</p>
+        <div class="hint">⚠ Important: <strong>close all tabs of this site</strong> (or use a fresh incognito window) to fully clear cached credentials from your browser. Basic Auth doesn't have a programmatic logout — this is a browser limitation.</div>
+        <a href="/" class="btn">Sign in again</a>
+      </div>
+    </body></html>
+    """
+    resp = Response(body, status=401, mimetype="text/html")
+    resp.headers["WWW-Authenticate"] = f'Basic realm="{realm}"'
+    resp.headers["Cache-Control"]    = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+
 @app.route("/stream")
 def stream():
     q: queue.Queue = queue.Queue(maxsize=30)

@@ -5760,8 +5760,11 @@ def onboard_submit_route():
         "TELEGRAM_CHAT_ID": tg_chat or "",
     }
     try:
+        # No `-E` — that flag is refused by default sudoers. Instead, the
+        # sudoers.d/kite-onboarding file whitelists exactly the env vars
+        # this script needs via `Defaults!script env_keep += "..."`.
         r = _subprocess.run(
-            ["sudo", "-E", "/opt/kite/bin/add_user_ui.sh"],
+            ["sudo", "/opt/kite/bin/add_user_ui.sh"],
             env=env, capture_output=True, text=True, timeout=60,
         )
     except Exception as e:

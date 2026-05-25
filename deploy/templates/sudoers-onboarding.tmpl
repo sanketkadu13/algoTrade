@@ -6,6 +6,13 @@
 # Without this, the Flask process can't call sudo /opt/kite/bin/add_user_ui.sh
 # during UI-driven onboarding. Limit the surface to just these two scripts;
 # do NOT grant broader sudo.
+#
+# env_keep: by default sudo strips the caller's environment. We explicitly
+# preserve only the variables add_user_ui.sh needs — narrower than `sudo -E`
+# (which the default sudoers config refuses with "preserving the entire
+# environment is not supported").
+
+Defaults!/opt/kite/bin/add_user_ui.sh env_keep += "SLUG DASH_PASSWORD API_KEY API_SECRET ACCESS_TOKEN KITE_USER_ID KITE_PASSWORD KITE_TOTP_SECRET TELEGRAM_TOKEN TELEGRAM_CHAT_ID"
 
 ubuntu ALL=(root) NOPASSWD: /opt/kite/bin/add_user_ui.sh
 ubuntu ALL=(root) NOPASSWD: /opt/kite/bin/remove_user.sh

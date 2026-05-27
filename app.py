@@ -5658,6 +5658,40 @@ def admin_remove_user_route(slug: str):
     return jsonify({"ok": True, "output": r.stdout})
 
 
+@app.route("/admin/users/<slug>/reset-password", methods=["POST"])
+def admin_reset_password_route(slug: str):
+    """Reset a provisioned user's basic-auth password.
+
+    Body: {dash_password: str (>=6 chars)}.
+    Overwrites /etc/nginx/.htpasswd-<slug>; no nginx reload needed since
+    nginx re-reads the htpasswd file per request.
+    """
+    if not ADMIN_ENABLED:
+        return jsonify({"ok": False, "error": "admin not enabled"}), 403
+    if not slug.replace("-", "").isalnum():
+        return jsonify({"ok": False, "error": "bad slug"}), 400
+    d = request.json or {}
+    new_password = d.get("dash_password") or ""
+    if len(new_password) < 6:
+        return jsonify({"ok": False, "error": "password must be at least 6 chars"}), 400
+
+    env = {
+        "PATH":          "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "SLUG":          slug,
+        "DASH_PASSWORD": new_password,
+    }
+    try:
+        r = _subprocess.run(
+            ["sudo", "/opt/kite/bin/reset_user_password.sh"],
+            env=env, capture_output=True, text=True, timeout=15,
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"subprocess failed: {e}"}), 500
+    if r.returncode != 0:
+        return jsonify({"ok": False, "error": (r.stderr or r.stdout).strip()}), 500
+    return jsonify({"ok": True, "slug": slug})
+
+
 # ── Public onboarding (invite-token gated) ─────────────────────────────────
 @app.route("/onboard", methods=["GET"])
 def onboard_page():

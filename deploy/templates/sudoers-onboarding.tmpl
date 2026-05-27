@@ -12,7 +12,9 @@
 # (which the default sudoers config refuses with "preserving the entire
 # environment is not supported").
 
-Defaults!/opt/kite/bin/add_user_ui.sh env_keep += "SLUG DASH_PASSWORD API_KEY API_SECRET ACCESS_TOKEN KITE_USER_ID KITE_PASSWORD KITE_TOTP_SECRET TELEGRAM_TOKEN TELEGRAM_CHAT_ID"
+Defaults!/opt/kite/bin/add_user_ui.sh         env_keep += "SLUG DASH_PASSWORD API_KEY API_SECRET ACCESS_TOKEN KITE_USER_ID KITE_PASSWORD KITE_TOTP_SECRET TELEGRAM_TOKEN TELEGRAM_CHAT_ID"
+Defaults!/opt/kite/bin/reset_user_password.sh env_keep += "SLUG DASH_PASSWORD"
 
 ubuntu ALL=(root) NOPASSWD: /opt/kite/bin/add_user_ui.sh
 ubuntu ALL=(root) NOPASSWD: /opt/kite/bin/remove_user.sh
+ubuntu ALL=(root) NOPASSWD: /opt/kite/bin/reset_user_password.sh

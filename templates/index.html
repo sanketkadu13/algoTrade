@@ -2341,7 +2341,10 @@
             <strong>${u.slug}</strong> &nbsp; ${status}
             <div style="font-size:10px;color:var(--dim);margin-top:2px">${typeof url === 'string' ? '<a href="' + url + '" target="_blank" style="color:var(--blue);text-decoration:none">' + url + '</a>' : url} &nbsp;·&nbsp; flask :${u.flask_port}</div>
           </div>
-          <button class="btn-save" onclick="adminRemoveUser('${u.slug}')" style="border-color:var(--red);color:var(--red);width:auto;padding:4px 10px;font-size:11px">Remove</button>
+          <div style="display:flex;gap:6px">
+            <button class="btn-save" onclick="adminResetPassword('${u.slug}')" style="border-color:var(--orange);color:var(--orange);width:auto;padding:4px 10px;font-size:11px">Reset PW</button>
+            <button class="btn-save" onclick="adminRemoveUser('${u.slug}')" style="border-color:var(--red);color:var(--red);width:auto;padding:4px 10px;font-size:11px">Remove</button>
+          </div>
         </div>`;
       }).join('');
     }
@@ -2399,6 +2402,39 @@
     if (!confirm('Revoke this invite link? It will stop working immediately.')) return;
     await fetch('/admin/invite/' + encodeURIComponent(token), { method: 'DELETE' });
     loadAdmin();
+  }
+
+  async function adminResetPassword(slug) {
+    const newPw = prompt(
+      `Reset basic-auth password for "${slug}"?\n\n` +
+      `Enter a new password (at least 6 characters).\n` +
+      `Leave blank to cancel.\n\n` +
+      `The old password stops working immediately. The user will need to re-enter ` +
+      `the new one in their browser (clear saved credentials first if it doesn't prompt).`
+    );
+    if (!newPw) return;
+    if (newPw.length < 6) {
+      alert('Password must be at least 6 characters.');
+      return;
+    }
+    const r = await fetch(`/admin/users/${encodeURIComponent(slug)}/reset-password`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ dash_password: newPw }),
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      alert('Reset failed: ' + (d.error || ''));
+      return;
+    }
+    // Show the new password back to the admin so they can send it to the user.
+    // Using prompt() with a default value makes it copy-friendly on HTTP
+    // (where navigator.clipboard is blocked).
+    prompt(
+      `✓ Password reset for "${slug}".\n\n` +
+      `New password (copy this and send to the user):`,
+      newPw
+    );
   }
 
   async function adminRemoveUser(slug) {

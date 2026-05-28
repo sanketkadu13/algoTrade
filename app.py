@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import os
 import queue
 import threading
@@ -4496,8 +4497,8 @@ def straddle_skip_today_route():
 # ── Owl Method (1.5%-OTM monthly strangle, intraday) ──────────────────────────
 #
 # Strategy: at configured entry time (default 09:20 IST), short:
-#   CE strike = round( anchor * 1.015 / 50 ) * 50
-#   PE strike = round( anchor * 0.985 / 50 ) * 50
+#   CE strike = ceil ( anchor * 1.015 / 50 ) * 50    # round UP   (more OTM)
+#   PE strike = floor( anchor * 0.985 / 50 ) * 50    # round DOWN (more OTM)
 # where `anchor` = NIFTY spot LTP at entry trigger (NOT the official open).
 # On NIFTY monthly expiry. Per-leg SL ₹2,000 (independent). Other leg keeps
 # running until exit_time (default 15:00 IST). Skip monthly expiry day.
@@ -4615,8 +4616,16 @@ def _owl_log(event: str, **extra) -> None:
     print(f"[owl] {ts} {event} {extra}")
 
 
-def _owl_nearest_strike(target: float) -> int:
-    return int(round(target / _OWL_STRIKE_STEP) * _OWL_STRIKE_STEP)
+def _owl_ce_strike(target: float) -> int:
+    """CE round UP: pick the strike at or above the 1.5% target so the call
+    is at least as OTM as intended (never closer to spot than the rule says)."""
+    return int(math.ceil(target / _OWL_STRIKE_STEP) * _OWL_STRIKE_STEP)
+
+
+def _owl_pe_strike(target: float) -> int:
+    """PE round DOWN: pick the strike at or below the 1.5% target so the put
+    is at least as OTM as intended."""
+    return int(math.floor(target / _OWL_STRIKE_STEP) * _OWL_STRIKE_STEP)
 
 
 def _owl_fetch_spot_price() -> float | None:
@@ -4671,8 +4680,10 @@ def _owl_setup_today() -> bool:
         return False
 
     pct    = float(_owl_config.get("otm_pct") or 1.5) / 100.0
-    ce_str = _owl_nearest_strike(spot * (1 + pct))
-    pe_str = _owl_nearest_strike(spot * (1 - pct))
+    # CE rounds UP, PE rounds DOWN — always land at or beyond the 1.5%
+    # buffer (never closer to spot), so the realized OTM ≥ configured OTM.
+    ce_str = _owl_ce_strike(spot * (1 + pct))
+    pe_str = _owl_pe_strike(spot * (1 - pct))
     expiry = _current_monthly_expiry(today)
     ce_sym = _nifty_option_symbol(ce_str, "CE", expiry)
     pe_sym = _nifty_option_symbol(pe_str, "PE", expiry)

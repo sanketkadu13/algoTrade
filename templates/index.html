@@ -1593,8 +1593,8 @@
         <strong style="color:var(--text)">Daily setup</strong> (executed every trading day except monthly expiry):
         <ol style="margin:6px 0 10px 18px;padding:0">
           <li>At the configured entry time, fetch <strong>NIFTY spot LTP</strong> (live, not the day's open).</li>
-          <li>Compute <strong>CE strike</strong> = nearest 50 to <code>Spot × 1.015</code>.</li>
-          <li>Compute <strong>PE strike</strong> = nearest 50 to <code>Spot × 0.985</code>.</li>
+          <li>Compute <strong>CE strike</strong> = <code>ceil(Spot × 1.015 / 50) × 50</code> (round <strong>up</strong> — strike at or above the 1.5% target, so the call is always at least 1.5% OTM).</li>
+          <li>Compute <strong>PE strike</strong> = <code>floor(Spot × 0.985 / 50) × 50</code> (round <strong>down</strong> — strike at or below the target, so the put is always at least 1.5% OTM).</li>
           <li>SELL 1 lot CE + 1 lot PE of the current monthly expiry.</li>
         </ol>
         <div style="color:var(--dim);font-size:11px;margin:-4px 0 12px 18px">

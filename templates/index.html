@@ -674,6 +674,7 @@
       <button id="vt-straddle"   class="vt-btn"           onclick="switchView('straddle')">🎯 Straddle</button>
       <button id="vt-interarb"   class="vt-btn"           onclick="switchView('interarb')">🔁 NSE↔BSE</button>
       <button id="vt-commarb"    class="vt-btn"           onclick="switchView('commarb')">⛽ Comm Lot</button>
+      <button id="vt-owl"        class="vt-btn"           onclick="switchView('owl')">🦉 Owl</button>
       <button id="vt-alerts"     class="vt-btn"           onclick="switchView('alerts')">📱 Alerts</button>
       <button id="vt-admin"      class="vt-btn"           onclick="switchView('admin')" style="display:none">👥 Admin</button>
     </div>
@@ -1489,6 +1490,129 @@
 
   </div>
 
+  <!-- ═══════════════════════════════ OWL VIEW ══════════════════════════════════ -->
+  <!-- Owl Method: 1.5%-OTM monthly NIFTY strangle, intraday, per-leg SL -->
+  <div id="view-owl" style="display:none">
+
+    <!-- Config card -->
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>🦉 Owl Method <span id="owl-status-badge" style="font-weight:normal;font-size:11px;margin-left:8px"></span></span>
+        <button class="btn-save" onclick="loadOwl()" style="border-color:var(--blue);color:var(--blue);width:auto;padding:5px 11px">↻ Refresh</button>
+      </div>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.5">
+        Sells <strong>1.5%-OTM CE + PE</strong> on NIFTY monthly expiry at your chosen time. Independent ₹SL per leg; remaining leg held to market close. Skips monthly expiry day.
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;align-items:end">
+        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:11px;color:var(--muted)">
+          Entry time
+          <input type="time" id="owl-entry-time" value="09:20">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:11px;color:var(--muted)">
+          Exit time (force close)
+          <input type="time" id="owl-exit-time" value="15:00">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:11px;color:var(--muted)">
+          Per-leg SL (₹)
+          <input type="number" id="owl-per-leg-sl" min="100" step="100" value="2000">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:11px;color:var(--muted)">
+          Lots
+          <input type="number" id="owl-lots" min="1" step="1" value="1">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:11px;color:var(--muted)">
+          OTM %
+          <input type="number" id="owl-otm-pct" min="0.1" max="10" step="0.1" value="1.5">
+        </label>
+      </div>
+
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:14px">
+        <label style="display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;cursor:pointer">
+          <input type="checkbox" id="owl-active"> <span>Active (auto-enter daily)</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;cursor:pointer">
+          <input type="checkbox" id="owl-paper-mode" checked> <span>Paper trade</span>
+        </label>
+        <button class="btn-save" onclick="saveOwlConfig()" style="border-color:var(--green);color:var(--green-hi);width:auto;padding:7px 16px">Save</button>
+        <span id="owl-config-result" style="font-family:var(--mono);font-size:11px"></span>
+      </div>
+    </div>
+
+    <!-- Today's strangle -->
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title">Today's strangle <span id="owl-today-date" style="font-weight:normal;color:var(--dim);font-size:11px;margin-left:8px"></span></div>
+      <div id="owl-today-body" style="font-family:var(--mono);font-size:12px;color:var(--dim)">Loading…</div>
+
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+        <button class="btn-save" onclick="owlEnterNow()" style="border-color:var(--green);color:var(--green-hi);width:auto;padding:6px 14px;font-size:12px">Enter Now</button>
+        <button class="btn-save" onclick="owlExit('ce')"  style="border-color:var(--red);color:var(--red);width:auto;padding:6px 14px;font-size:12px">Exit CE</button>
+        <button class="btn-save" onclick="owlExit('pe')"  style="border-color:var(--red);color:var(--red);width:auto;padding:6px 14px;font-size:12px">Exit PE</button>
+        <button class="btn-save" onclick="owlExit('both')" style="border-color:var(--red);color:var(--red-hi);width:auto;padding:6px 14px;font-size:12px">Exit Both</button>
+        <span id="owl-action-result" style="font-family:var(--mono);font-size:11px;align-self:center"></span>
+      </div>
+    </div>
+
+    <!-- Recent history -->
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title">Recent days</div>
+      <div style="overflow-x:auto">
+        <table id="owl-history-table" style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px">
+          <thead>
+            <tr style="color:var(--muted);border-bottom:1px solid var(--border-dim)">
+              <th style="text-align:left;padding:6px 8px">Date</th>
+              <th style="text-align:right;padding:6px 8px">Open</th>
+              <th style="text-align:right;padding:6px 8px">CE K</th>
+              <th style="text-align:right;padding:6px 8px">PE K</th>
+              <th style="text-align:right;padding:6px 8px">CE P&amp;L</th>
+              <th style="text-align:right;padding:6px 8px">PE P&amp;L</th>
+              <th style="text-align:right;padding:6px 8px">Net</th>
+              <th style="text-align:left;padding:6px 8px">Mode</th>
+            </tr>
+          </thead>
+          <tbody id="owl-history-body">
+            <tr><td colspan="8" style="padding:10px;color:var(--dim);text-align:center">No history yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Activity log -->
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title">Activity log</div>
+      <div id="owl-logs" style="font-family:var(--mono);font-size:11px;color:var(--dim);line-height:1.6;max-height:240px;overflow-y:auto">No activity yet.</div>
+    </div>
+
+    <!-- Strategy notes -->
+    <div class="panel" style="margin-top:0;background:rgba(46,160,67,.04);border-color:var(--border-dim)">
+      <div class="panel-title">📖 How the Owl Method works</div>
+      <div style="font-size:12px;line-height:1.65;color:var(--muted)">
+        <strong style="color:var(--text)">Premise.</strong> Any gap-up or gap-down already prices in overnight news. From the open, NIFTY's intraday range usually stays within ±1.5%.<br><br>
+
+        <strong style="color:var(--text)">Daily setup</strong> (executed every trading day except monthly expiry):
+        <ol style="margin:6px 0 10px 18px;padding:0">
+          <li>Take NIFTY's <strong>open price</strong> for today (fetched via Kite OHLC).</li>
+          <li>Compute <strong>CE strike</strong> = nearest 50 to <code>Open × 1.015</code>.</li>
+          <li>Compute <strong>PE strike</strong> = nearest 50 to <code>Open × 0.985</code>.</li>
+          <li>SELL 1 lot CE + 1 lot PE of the current monthly expiry at the configured entry time.</li>
+        </ol>
+
+        <strong style="color:var(--text)">Stop-loss + exit.</strong> ₹2,000 per leg (independent). If a leg hits SL, close <strong>only that leg</strong>; the other keeps running until the configured exit time. If neither leg hits SL, both close at exit time. Worst-case daily loss ≈ ₹4,000 (both legs SL'd).<br><br>
+
+        <strong style="color:var(--text)">Lot size.</strong> NIFTY lot is currently <strong>65</strong>. At 65/lot, ₹2,000 SL ≈ 30.8 pts on the option premium — a tight intraday tolerance. Consider widening if your back-test shows excess whipsaw.<br><br>
+
+        <strong style="color:var(--text)">Margin.</strong> Naked option selling — one NIFTY strangle needs ~₹2.5–3 lakh SPAN+exposure margin. The dashboard does not pre-check margin; Kite will reject if insufficient.<br><br>
+
+        <strong style="color:var(--text)">Paper mode.</strong> Default ON. Records simulated fills at the live LTP at trigger; tracks fake P&amp;L using real ticks. Flip "Paper trade" off only when you're confident in the parameters.<br><br>
+
+        <strong style="color:var(--text)">Skip-expiry-day rule.</strong> The strategy never enters on monthly expiry day — premiums collapse fast and the risk asymmetry breaks down.<br><br>
+
+        <em style="color:var(--dim)">Original strategy: Mahesh Chandra Kaushik's "Ullu Vidhi" (owl method). The 1.5% offset, ₹2,000 per-leg SL, and one-leg-keeps-running rule are his. Implementation tailored to current NIFTY lot size + Kite API constraints.</em>
+      </div>
+    </div>
+
+  </div>
+
   <!-- ═══════════════════════════════ ALERTS VIEW ═══════════════════════════════ -->
   <div id="view-alerts" style="display:none">
 
@@ -1958,6 +2082,7 @@
     document.getElementById('view-straddle').style.display    = (v === 'straddle')   ? '' : 'none';
     document.getElementById('view-interarb').style.display    = (v === 'interarb')   ? '' : 'none';
     document.getElementById('view-commarb').style.display     = (v === 'commarb')    ? '' : 'none';
+    document.getElementById('view-owl').style.display         = (v === 'owl')        ? '' : 'none';
     document.getElementById('view-alerts').style.display      = (v === 'alerts')     ? '' : 'none';
     document.getElementById('view-admin').style.display       = (v === 'admin')      ? '' : 'none';
     document.getElementById('vt-strategies').classList.toggle('vt-active', v === 'strategies');
@@ -1967,6 +2092,7 @@
     document.getElementById('vt-straddle').classList.toggle('vt-active', v === 'straddle');
     document.getElementById('vt-interarb').classList.toggle('vt-active', v === 'interarb');
     document.getElementById('vt-commarb').classList.toggle('vt-active', v === 'commarb');
+    document.getElementById('vt-owl').classList.toggle('vt-active', v === 'owl');
     document.getElementById('vt-alerts').classList.toggle('vt-active', v === 'alerts');
     document.getElementById('vt-admin').classList.toggle('vt-active', v === 'admin');
     // Re-render tabs with new filter
@@ -2000,6 +2126,9 @@
     }
     if (v === 'alerts') {
       loadTelegramConfig();
+    }
+    if (v === 'owl') {
+      loadOwl();
     }
   }
 
@@ -2544,6 +2673,211 @@
   setInterval(() => {
     if (currentView === 'admin') loadAdmin();
   }, 5000);
+
+  // ── Owl Method ─────────────────────────────────────────────────────────────
+  let _owlPollTimer = null;
+
+  async function loadOwl() {
+    try {
+      const r = await fetch('/owl');
+      const d = await r.json();
+      if (!d.ok) return;
+      renderOwl(d);
+      const h = await (await fetch('/owl/history?n=20')).json();
+      renderOwlHistory(h.history || []);
+    } catch (e) {
+      console.error('loadOwl', e);
+    }
+  }
+
+  function _owlMtmColor(v) {
+    if (v === null || v === undefined || isNaN(v) || v === 0) return 'var(--text)';
+    return v > 0 ? 'var(--green-hi)' : 'var(--red-hi)';
+  }
+
+  function _owlLegRow(label, leg, lastLtp) {
+    if (!leg) {
+      return `<div style="padding:8px 0;color:var(--dim)">${label}: <span style="color:var(--dim)">not entered yet</span></div>`;
+    }
+    const mtm = leg.mtm ?? 0;
+    const ltp = (lastLtp !== null && lastLtp !== undefined) ? `₹${Number(lastLtp).toFixed(2)}` : '—';
+    let statusBadge;
+    if (leg.status === 'open')        statusBadge = '<span style="color:var(--green-hi)">● open</span>';
+    else if (leg.status === 'closed') statusBadge = `<span style="color:var(--dim)">● closed (${leg.exit_reason || '?'})</span>`;
+    else if (leg.status === 'failed') statusBadge = '<span style="color:var(--red-hi)">● failed</span>';
+    else                              statusBadge = `<span style="color:var(--muted)">● ${leg.status}</span>`;
+    const exitLine = (leg.exit_price !== null && leg.exit_price !== undefined)
+      ? `<div style="font-size:10px;color:var(--dim);margin-top:2px">Exit: ₹${Number(leg.exit_price).toFixed(2)} (${leg.exit_reason})</div>`
+      : '';
+    return `
+      <div style="padding:10px 0;border-bottom:1px solid var(--border-dim)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+          <div>
+            <div><strong>${label}</strong> ${leg.symbol || ''} ${statusBadge} ${leg.paper ? '<span style="color:var(--orange);font-size:10px;margin-left:4px">PAPER</span>' : ''}</div>
+            <div style="color:var(--muted);font-size:11px;margin-top:2px">
+              Strike ${leg.strike} · Qty ${leg.qty} · Entry ₹${(leg.entry_price ?? 0).toFixed(2)} · LTP ${ltp}
+            </div>
+            ${exitLine}
+          </div>
+          <div style="text-align:right;font-size:18px;font-weight:600;color:${_owlMtmColor(mtm)}">
+            ₹${Number(mtm || 0).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function renderOwl(d) {
+    const cfg = d.config || {};
+    const s   = d.state  || {};
+    // Hydrate form (only once, to avoid stomping user edits mid-typing)
+    if (!document.getElementById('owl-entry-time').dataset.hydrated) {
+      document.getElementById('owl-entry-time').value  = cfg.entry_time   || '09:20';
+      document.getElementById('owl-exit-time').value   = cfg.exit_time    || '15:00';
+      document.getElementById('owl-per-leg-sl').value  = cfg.per_leg_sl   ?? 2000;
+      document.getElementById('owl-lots').value        = cfg.lots         ?? 1;
+      document.getElementById('owl-otm-pct').value     = cfg.otm_pct      ?? 1.5;
+      document.getElementById('owl-active').checked    = !!cfg.active;
+      document.getElementById('owl-paper-mode').checked = !!cfg.paper_mode;
+      document.getElementById('owl-entry-time').dataset.hydrated = '1';
+    }
+
+    // Status badge
+    const badge = document.getElementById('owl-status-badge');
+    const life  = s.lifecycle || 'idle';
+    const colorByLife = {
+      idle:         ['var(--dim)',     '○ idle'],
+      armed:        ['var(--blue)',    '◐ armed'],
+      in_position:  ['var(--green-hi)', '● in position'],
+      squared_off:  ['var(--muted)',   '◯ squared off'],
+      skipped:      ['var(--orange)',  '⊘ skipped'],
+    };
+    const [col, lbl] = colorByLife[life] || ['var(--muted)', life];
+    const modeChip = `<span style="color:var(--orange);font-size:10px;margin-left:6px">${cfg.paper_mode ? 'PAPER' : 'LIVE'}</span>`;
+    const activeChip = cfg.active
+      ? '<span style="color:var(--green-hi);font-size:10px;margin-left:6px">AUTO</span>'
+      : '<span style="color:var(--dim);font-size:10px;margin-left:6px">manual</span>';
+    badge.innerHTML = `<span style="color:${col}">${lbl}</span> ${activeChip} ${modeChip}`;
+
+    // Today body
+    document.getElementById('owl-today-date').textContent = s.session_date || d.today || '';
+    const body = document.getElementById('owl-today-body');
+    if (d.is_expiry_day) {
+      body.innerHTML = '<div style="color:var(--orange)">⊘ Monthly expiry day — Owl rule says skip. No entry today.</div>';
+    } else if (s.skip_today) {
+      body.innerHTML = `<div style="color:var(--orange)">⊘ Skipped: ${s.skip_reason || 'manual'}</div>`;
+    } else if (!s.open_price) {
+      body.innerHTML = '<div style="color:var(--dim)">Awaiting setup. Will arm at <strong>' + (cfg.entry_time || '09:20') + '</strong>, or hit "Enter Now" to trigger manually.</div>';
+    } else {
+      const ce = s.ce_leg, pe = s.pe_leg;
+      const netMtm = (ce?.mtm || 0) + (pe?.mtm || 0);
+      body.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:10px;border-bottom:1px solid var(--border-dim)">
+          <div>
+            <div style="color:var(--muted);font-size:11px">NIFTY open</div>
+            <div style="font-size:18px">₹${Number(s.open_price).toFixed(2)}</div>
+            <div style="color:var(--dim);font-size:10px;margin-top:2px">Expiry ${s.expiry || '—'}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="color:var(--muted);font-size:11px">Net day MTM</div>
+            <div style="font-size:22px;font-weight:600;color:${_owlMtmColor(netMtm)}">
+              ₹${Number(netMtm).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+            </div>
+          </div>
+        </div>
+        ${_owlLegRow('CE', ce, s.last_ce_ltp)}
+        ${_owlLegRow('PE', pe, s.last_pe_ltp)}
+      `;
+    }
+
+    // Logs
+    const logsEl = document.getElementById('owl-logs');
+    if (!s.logs || s.logs.length === 0) {
+      logsEl.innerHTML = '<span style="color:var(--dim)">No activity yet.</span>';
+    } else {
+      logsEl.innerHTML = s.logs.slice(0, 30).map(l => {
+        const extras = Object.entries(l).filter(([k]) => !['ts','event'].includes(k))
+          .map(([k,v]) => `${k}=${typeof v === 'number' ? v : JSON.stringify(v)}`).join(' ');
+        return `<div><span style="color:var(--muted)">${l.ts}</span> <strong>${l.event}</strong> <span style="color:var(--dim)">${extras}</span></div>`;
+      }).join('');
+    }
+  }
+
+  function renderOwlHistory(rows) {
+    const body = document.getElementById('owl-history-body');
+    if (!rows || rows.length === 0) {
+      body.innerHTML = '<tr><td colspan="8" style="padding:10px;color:var(--dim);text-align:center">No history yet.</td></tr>';
+      return;
+    }
+    body.innerHTML = rows.slice().reverse().map(r => {
+      const net = r.net_mtm ?? 0;
+      const cePnl = r.ce_mtm ?? 0;
+      const pePnl = r.pe_mtm ?? 0;
+      if (r.skip) {
+        return `<tr style="border-bottom:1px solid var(--border-dim)">
+          <td style="padding:6px 8px">${r.date}</td>
+          <td colspan="6" style="padding:6px 8px;color:var(--orange)">⊘ skipped — ${r.skip_reason || ''}</td>
+          <td style="padding:6px 8px;color:var(--dim)">—</td>
+        </tr>`;
+      }
+      return `<tr style="border-bottom:1px solid var(--border-dim)">
+        <td style="padding:6px 8px">${r.date}</td>
+        <td style="padding:6px 8px;text-align:right">${r.open_price?.toFixed?.(2) ?? '—'}</td>
+        <td style="padding:6px 8px;text-align:right">${r.ce_strike ?? '—'}</td>
+        <td style="padding:6px 8px;text-align:right">${r.pe_strike ?? '—'}</td>
+        <td style="padding:6px 8px;text-align:right;color:${_owlMtmColor(cePnl)}">${Number(cePnl).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+        <td style="padding:6px 8px;text-align:right;color:${_owlMtmColor(pePnl)}">${Number(pePnl).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+        <td style="padding:6px 8px;text-align:right;font-weight:600;color:${_owlMtmColor(net)}">${Number(net).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+        <td style="padding:6px 8px;color:var(--dim)">${r.paper ? 'paper' : 'live'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function _owlSetResult(elId, ok, msg) {
+    const el = document.getElementById(elId);
+    el.innerHTML = `<span style="color:${ok ? 'var(--green-hi)' : 'var(--red-hi)'}">${ok ? '✓' : '⚠'} ${msg}</span>`;
+    setTimeout(() => { if (el.textContent.includes(msg)) el.innerHTML = ''; }, 4000);
+  }
+
+  async function saveOwlConfig() {
+    const payload = {
+      entry_time: document.getElementById('owl-entry-time').value,
+      exit_time:  document.getElementById('owl-exit-time').value,
+      per_leg_sl: parseFloat(document.getElementById('owl-per-leg-sl').value),
+      lots:       parseInt(document.getElementById('owl-lots').value, 10),
+      otm_pct:    parseFloat(document.getElementById('owl-otm-pct').value),
+      active:     document.getElementById('owl-active').checked,
+      paper_mode: document.getElementById('owl-paper-mode').checked,
+    };
+    const r = await fetch('/owl/config', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body:   JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!d.ok) { _owlSetResult('owl-config-result', false, d.error || 'Save failed.'); return; }
+    _owlSetResult('owl-config-result', true, 'Saved.');
+  }
+
+  async function owlEnterNow() {
+    if (!confirm('Enter Owl strangle now?\n\nThis will compute today\'s CE/PE strikes from NIFTY open and place SELL orders (or paper-record them if Paper mode is on).')) return;
+    const r = await fetch('/owl/enter', { method: 'POST' });
+    const d = await r.json();
+    _owlSetResult('owl-action-result', !!d.ok, d.ok ? 'Entering…' : (d.error || 'Failed.'));
+    setTimeout(loadOwl, 1500);
+  }
+
+  async function owlExit(leg) {
+    const labels = { ce: 'CE leg', pe: 'PE leg', both: 'BOTH legs' };
+    if (!confirm(`Exit ${labels[leg]}? This buys back the short option(s) at market.`)) return;
+    const r = await fetch(`/owl/exit/${leg}`, { method: 'POST' });
+    const d = await r.json();
+    _owlSetResult('owl-action-result', !!d.ok, d.ok ? `Exiting ${labels[leg]}…` : (d.error || 'Failed.'));
+    setTimeout(loadOwl, 1500);
+  }
+
+  // Auto-refresh while view is open
+  setInterval(() => {
+    if (currentView === 'owl') loadOwl();
+  }, 3000);
 
   // ── Telegram alerts config ────────────────────────────────────────────────
   async function loadTelegramConfig() {

@@ -4486,6 +4486,641 @@ def straddle_skip_today_route():
     return jsonify({"ok": True})
 
 
+# ── Owl Method (1.5%-OTM monthly strangle, intraday) ──────────────────────────
+#
+# Strategy: at configured entry time (default 09:20 IST), short:
+#   CE strike = round( open_price * 1.015 / 50 ) * 50
+#   PE strike = round( open_price * 0.985 / 50 ) * 50
+# on NIFTY monthly expiry. Per-leg SL ₹2,000 (independent). Other leg keeps
+# running until exit_time (default 15:00 IST). Skip monthly expiry day.
+# Paper-trade mode supported (default ON until user explicitly switches).
+#
+# Rationale (from Mahesh Chandra Kaushik's "Ullu Vidhi"): intraday move from
+# open price rarely exceeds ±1.5% — gap up/down already discounts overnight
+# news. Selling 1.5%-OTM CE+PE collects theta against that bounded move.
+
+_NIFTY_LOT       = 65                  # current lot size as of 2026
+_OWL_STRIKE_STEP = 50                  # NIFTY strike interval
+
+_OWL_CONFIG_PATH = os.path.join(DATA_DIR, "data", "owl_config.json")
+_OWL_STATE_PATH  = os.path.join(DATA_DIR, "data", "owl_state.json")
+
+_owl_config = {
+    "active":       False,             # master kill switch (scheduler obeys)
+    "paper_mode":   True,               # default paper until user opts into live
+    "entry_time":   "09:20",
+    "exit_time":    "15:00",
+    "per_leg_sl":   2000.0,             # ₹ per leg before forced exit
+    "lots":         1,                  # number of NIFTY lots per leg
+    "otm_pct":      1.5,                # ±1.5% from open price
+}
+
+_owl_state: dict = {
+    "session_date":  None,              # YYYY-MM-DD of today's setup (if any)
+    "open_price":    None,
+    "expiry":        None,              # ISO date string of monthly expiry used
+    "ce_strike":     None,
+    "pe_strike":     None,
+    "ce_symbol":     None,
+    "pe_symbol":     None,
+    "ce_leg":        None,              # see _owl_leg_shape() below
+    "pe_leg":        None,
+    "skip_today":    False,
+    "skip_reason":   None,
+    "last_ce_ltp":   None,
+    "last_pe_ltp":   None,
+    "logs":          [],                # newest first
+    "history":       [],                # last ~60 trading days
+    "last_error":    None,
+    "lifecycle":     "idle",            # idle / armed / in_position / squared_off / skipped
+}
+_owl_lock = threading.Lock()
+
+
+def _owl_leg_shape() -> dict:
+    """Template for a leg dict."""
+    return {
+        "side":         "SELL",
+        "strike":       None,
+        "symbol":       None,
+        "qty":          0,
+        "entry_price":  None,
+        "entry_at":     None,
+        "entry_oid":    None,            # PAPER-CE/PE or kite order_id
+        "exit_price":   None,
+        "exit_at":      None,
+        "exit_oid":     None,
+        "exit_reason":  None,            # "SL" / "EOD" / "manual" / "entry_failed"
+        "mtm":          0.0,
+        "status":       "pending",       # pending / open / closed / failed
+        "paper":        True,
+    }
+
+
+def _owl_load() -> None:
+    """Load persisted config + history (best-effort)."""
+    try:
+        if os.path.exists(_OWL_CONFIG_PATH):
+            with open(_OWL_CONFIG_PATH) as f:
+                disk = json.load(f)
+            for k in _owl_config:
+                if k in disk:
+                    _owl_config[k] = disk[k]
+    except Exception as e:
+        print(f"[owl] config load: {e}")
+    try:
+        if os.path.exists(_OWL_STATE_PATH):
+            with open(_OWL_STATE_PATH) as f:
+                disk = json.load(f)
+            _owl_state["history"] = (disk.get("history") or [])[-60:]
+    except Exception as e:
+        print(f"[owl] state load: {e}")
+
+
+def _owl_save_config() -> None:
+    try:
+        with open(_OWL_CONFIG_PATH, "w") as f:
+            json.dump(_owl_config, f, indent=2)
+    except Exception as e:
+        print(f"[owl] config save: {e}")
+
+
+def _owl_save_state() -> None:
+    """Only persists `history` (the in-memory state is rebuilt each session)."""
+    try:
+        with open(_OWL_STATE_PATH, "w") as f:
+            json.dump({"history": _owl_state.get("history") or []}, f, indent=2)
+    except Exception as e:
+        print(f"[owl] state save: {e}")
+
+
+_owl_load()
+
+
+def _owl_log(event: str, **extra) -> None:
+    ts = _now_ist().strftime("%H:%M:%S")
+    entry = {"ts": ts, "event": event, **extra}
+    with _owl_lock:
+        _owl_state["logs"].insert(0, entry)
+        _owl_state["logs"] = _owl_state["logs"][:120]
+    print(f"[owl] {ts} {event} {extra}")
+
+
+def _owl_nearest_strike(target: float) -> int:
+    return int(round(target / _OWL_STRIKE_STEP) * _OWL_STRIKE_STEP)
+
+
+def _owl_fetch_open_price() -> float | None:
+    """NIFTY 50 index open price for today, via kite.ohlc.
+
+    The OHLC payload's `open` is the official exchange open (settled by 09:15:00)
+    so it's stable from 09:15:15 onward — safe to call any time during session.
+    """
+    try:
+        o = kite.ohlc(["NSE:NIFTY 50"])["NSE:NIFTY 50"].get("ohlc") or {}
+        op = float(o.get("open") or 0)
+        return op if op > 0 else None
+    except Exception as e:
+        print(f"[owl] open-price fetch: {e}")
+        return None
+
+
+def _owl_resolve_token(tradingsymbol: str) -> int | None:
+    try:
+        for inst in kite.instruments("NFO"):
+            if inst.get("tradingsymbol") == tradingsymbol:
+                return inst.get("instrument_token")
+    except Exception as e:
+        print(f"[owl] token lookup: {e}")
+    return None
+
+
+def _owl_setup_today() -> bool:
+    """Compute today's strikes from NIFTY open. Sets state, doesn't place orders."""
+    today = _now_ist().date()
+    if _is_monthly_expiry_day(today):
+        with _owl_lock:
+            _owl_state.update({
+                "session_date": today.isoformat(),
+                "skip_today":   True,
+                "skip_reason":  "monthly expiry day — Owl rule says skip",
+                "lifecycle":    "skipped",
+            })
+        _owl_log("skip", reason="expiry_day")
+        broadcast("owl_update")
+        return False
+
+    op = _owl_fetch_open_price()
+    if not op:
+        with _owl_lock:
+            _owl_state["last_error"] = "could not fetch NIFTY open price"
+        _owl_log("setup_failed", reason="no_open_price")
+        return False
+
+    pct    = float(_owl_config.get("otm_pct") or 1.5) / 100.0
+    ce_str = _owl_nearest_strike(op * (1 + pct))
+    pe_str = _owl_nearest_strike(op * (1 - pct))
+    expiry = _current_monthly_expiry(today)
+    ce_sym = _nifty_option_symbol(ce_str, "CE", expiry)
+    pe_sym = _nifty_option_symbol(pe_str, "PE", expiry)
+
+    with _owl_lock:
+        _owl_state.update({
+            "session_date":  today.isoformat(),
+            "open_price":    round(op, 2),
+            "expiry":        expiry.isoformat(),
+            "ce_strike":     ce_str, "pe_strike": pe_str,
+            "ce_symbol":     ce_sym, "pe_symbol": pe_sym,
+            "ce_leg":        None,   "pe_leg":    None,
+            "skip_today":    False,  "skip_reason": None,
+            "last_ce_ltp":   None,   "last_pe_ltp": None,
+            "last_error":    None,
+            "lifecycle":     "armed",
+        })
+    _owl_log("setup",
+             open_price=round(op, 2), expiry=expiry.isoformat(),
+             ce_strike=ce_str, pe_strike=pe_str,
+             ce_symbol=ce_sym, pe_symbol=pe_sym)
+    _telegram(
+        f"🦉 *Owl armed* — NIFTY open ₹{op:.2f} ({expiry.strftime('%d-%b')})\n"
+        f"CE: `{ce_sym}`  · PE: `{pe_sym}`\n"
+        f"Mode: *{'PAPER' if _owl_config['paper_mode'] else 'LIVE'}*"
+    )
+    broadcast("owl_update")
+    return True
+
+
+def _owl_ltp(symbol: str) -> float | None:
+    """Best-effort LTP for an NFO option symbol."""
+    try:
+        key = f"NFO:{symbol}"
+        q = kite.quote([key]).get(key) or {}
+        ltp = float(q.get("last_price") or 0)
+        return ltp if ltp > 0 else None
+    except Exception as e:
+        print(f"[owl] ltp {symbol}: {e}")
+        return None
+
+
+def _owl_place_sell(symbol: str, qty: int, paper: bool) -> tuple[str | None, float | None, str | None]:
+    """Returns (order_id, fill_price, error). For paper mode fill = LTP."""
+    ltp = _owl_ltp(symbol)
+    if paper:
+        return "PAPER", ltp, None
+    if not ltp:
+        return None, None, "no LTP for fill estimate"
+    try:
+        oid = kite.place_order(
+            variety=kite.VARIETY_REGULAR,
+            exchange="NFO", tradingsymbol=symbol,
+            transaction_type=kite.TRANSACTION_TYPE_SELL,
+            quantity=qty, product=kite.PRODUCT_NRML,
+            order_type=kite.ORDER_TYPE_MARKET,
+            tag="owl_entry",
+        )
+        return oid, ltp, None
+    except Exception as e:
+        return None, None, str(e)
+
+
+def _owl_place_buy(symbol: str, qty: int, paper: bool) -> tuple[str | None, float | None, str | None]:
+    ltp = _owl_ltp(symbol)
+    if paper:
+        return "PAPER", ltp, None
+    if not ltp:
+        return None, None, "no LTP for fill estimate"
+    try:
+        oid = kite.place_order(
+            variety=kite.VARIETY_REGULAR,
+            exchange="NFO", tradingsymbol=symbol,
+            transaction_type=kite.TRANSACTION_TYPE_BUY,
+            quantity=qty, product=kite.PRODUCT_NRML,
+            order_type=kite.ORDER_TYPE_MARKET,
+            tag="owl_exit",
+        )
+        return oid, ltp, None
+    except Exception as e:
+        return None, None, str(e)
+
+
+def _owl_enter() -> bool:
+    """Sell CE + PE for today. Assumes _owl_setup_today() has run."""
+    with _owl_lock:
+        cfg = dict(_owl_config)
+        s   = dict(_owl_state)
+    if s.get("skip_today"):
+        return False
+    if not (s.get("ce_symbol") and s.get("pe_symbol")):
+        _owl_log("enter_failed", reason="no_symbols_setup_first")
+        return False
+    if s.get("ce_leg") or s.get("pe_leg"):
+        _owl_log("enter_skipped", reason="already_entered_today")
+        return False
+
+    paper = bool(cfg.get("paper_mode"))
+    lots  = max(1, int(cfg.get("lots") or 1))
+    qty   = lots * _NIFTY_LOT
+    ce_sym, pe_sym = s["ce_symbol"], s["pe_symbol"]
+
+    # Place both in parallel
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_ce = ex.submit(_owl_place_sell, ce_sym, qty, paper)
+        f_pe = ex.submit(_owl_place_sell, pe_sym, qty, paper)
+        ce_oid, ce_fill, ce_err = f_ce.result()
+        pe_oid, pe_fill, pe_err = f_pe.result()
+
+    now_iso = _now_ist().isoformat()
+    ce_leg = _owl_leg_shape() | {
+        "side": "SELL", "strike": s["ce_strike"], "symbol": ce_sym,
+        "qty": qty, "paper": paper,
+    }
+    pe_leg = _owl_leg_shape() | {
+        "side": "SELL", "strike": s["pe_strike"], "symbol": pe_sym,
+        "qty": qty, "paper": paper,
+    }
+
+    if ce_err or ce_oid is None:
+        ce_leg.update(status="failed", exit_reason="entry_failed",
+                      entry_at=now_iso)
+        _owl_log("ce_entry_failed", error=ce_err)
+    else:
+        ce_leg.update(status="open", entry_price=ce_fill,
+                      entry_at=now_iso, entry_oid=str(ce_oid))
+
+    if pe_err or pe_oid is None:
+        pe_leg.update(status="failed", exit_reason="entry_failed",
+                      entry_at=now_iso)
+        _owl_log("pe_entry_failed", error=pe_err)
+    else:
+        pe_leg.update(status="open", entry_price=pe_fill,
+                      entry_at=now_iso, entry_oid=str(pe_oid))
+
+    with _owl_lock:
+        _owl_state["ce_leg"]    = ce_leg
+        _owl_state["pe_leg"]    = pe_leg
+        _owl_state["lifecycle"] = "in_position" if (
+            ce_leg["status"] == "open" or pe_leg["status"] == "open"
+        ) else "idle"
+    _owl_log("entry",
+             ce_fill=ce_fill, pe_fill=pe_fill, qty=qty,
+             paper=paper)
+    _telegram(
+        f"📍 *Owl entered* {'(PAPER)' if paper else ''}\n"
+        f"SELL CE `{ce_sym}` @ ₹{ce_fill or 0:.2f}  ({ce_leg['status']})\n"
+        f"SELL PE `{pe_sym}` @ ₹{pe_fill or 0:.2f}  ({pe_leg['status']})\n"
+        f"Qty/leg: {qty}  ·  Per-leg SL: ₹{cfg['per_leg_sl']:,.0f}"
+    )
+    broadcast("owl_update")
+    return True
+
+
+def _owl_close_leg(which: str, reason: str) -> bool:
+    """which ∈ {'ce','pe'}. Reason ∈ {'SL','EOD','manual'}.
+    Buys back the leg (or paper-records) and marks it closed."""
+    if which not in ("ce", "pe"):
+        return False
+    leg_key = f"{which}_leg"
+    with _owl_lock:
+        cfg = dict(_owl_config)
+        leg = _owl_state.get(leg_key)
+    if not leg or leg.get("status") != "open":
+        return False
+
+    paper = bool(cfg.get("paper_mode"))
+    oid, fill, err = _owl_place_buy(leg["symbol"], leg["qty"], paper)
+    now_iso = _now_ist().isoformat()
+    if err or oid is None:
+        # Mark the attempt but keep status open so a retry can happen later
+        _owl_log(f"{which}_exit_failed", reason=err)
+        _telegram(f"⚠️ Owl {which.upper()} exit failed: {err}")
+        return False
+
+    entry = float(leg["entry_price"] or 0)
+    exit_ = float(fill or 0)
+    # Short option P&L = (entry - exit) × qty
+    mtm  = (entry - exit_) * int(leg["qty"])
+    with _owl_lock:
+        _owl_state[leg_key].update({
+            "exit_price":  exit_,
+            "exit_at":     now_iso,
+            "exit_oid":    str(oid),
+            "exit_reason": reason,
+            "mtm":         round(mtm, 2),
+            "status":      "closed",
+        })
+        any_open = any(
+            (_owl_state.get(k) or {}).get("status") == "open"
+            for k in ("ce_leg", "pe_leg")
+        )
+        if not any_open:
+            _owl_state["lifecycle"] = "squared_off"
+    _owl_log(f"{which}_exit", reason=reason,
+             entry=entry, exit=exit_, mtm=round(mtm, 2))
+    _telegram(
+        f"🦉 *Owl {which.upper()} closed* ({reason}) {'(PAPER)' if paper else ''}\n"
+        f"`{leg['symbol']}`  entry ₹{entry:.2f} → exit ₹{exit_:.2f}\n"
+        f"Leg P&L: ₹{mtm:+,.2f}"
+    )
+    broadcast("owl_update")
+    return True
+
+
+def _owl_archive_today() -> None:
+    """After both legs closed (or expiry/skip), append today's snapshot to history."""
+    with _owl_lock:
+        s = dict(_owl_state)
+    if not s.get("session_date"):
+        return
+    # Avoid duplicates
+    hist = _owl_state.get("history") or []
+    if hist and hist[-1].get("date") == s["session_date"]:
+        return
+    ce = s.get("ce_leg") or {}
+    pe = s.get("pe_leg") or {}
+    record = {
+        "date":         s["session_date"],
+        "open_price":   s.get("open_price"),
+        "expiry":       s.get("expiry"),
+        "ce_strike":    s.get("ce_strike"),
+        "pe_strike":    s.get("pe_strike"),
+        "ce_entry":     ce.get("entry_price"),
+        "ce_exit":      ce.get("exit_price"),
+        "ce_reason":    ce.get("exit_reason"),
+        "ce_mtm":       ce.get("mtm"),
+        "pe_entry":     pe.get("entry_price"),
+        "pe_exit":      pe.get("exit_price"),
+        "pe_reason":    pe.get("exit_reason"),
+        "pe_mtm":       pe.get("mtm"),
+        "net_mtm":      round(float(ce.get("mtm") or 0) + float(pe.get("mtm") or 0), 2),
+        "skip":         bool(s.get("skip_today")),
+        "skip_reason":  s.get("skip_reason"),
+        "paper":        (ce.get("paper") if ce else pe.get("paper") if pe else True),
+    }
+    with _owl_lock:
+        _owl_state["history"].append(record)
+        _owl_state["history"] = _owl_state["history"][-60:]
+    _owl_save_state()
+
+
+def _owl_tick_loop():
+    """Polls CE/PE LTPs every 2s, updates leg MTM, fires per-leg SL."""
+    while True:
+        try:
+            with _owl_lock:
+                cfg = dict(_owl_config)
+                s   = dict(_owl_state)
+            ce_leg, pe_leg = s.get("ce_leg"), s.get("pe_leg")
+            need_ce = ce_leg and ce_leg.get("status") == "open"
+            need_pe = pe_leg and pe_leg.get("status") == "open"
+            if not (need_ce or need_pe):
+                time.sleep(2)
+                continue
+
+            keys = []
+            if need_ce: keys.append(f"NFO:{ce_leg['symbol']}")
+            if need_pe: keys.append(f"NFO:{pe_leg['symbol']}")
+            try:
+                quotes = kite.quote(keys)
+            except Exception as e:
+                print(f"[owl-tick] quote: {e}")
+                time.sleep(3); continue
+
+            sl = float(cfg.get("per_leg_sl") or 2000.0)
+            if need_ce:
+                ce_ltp = float((quotes.get(f"NFO:{ce_leg['symbol']}") or {}).get("last_price") or 0)
+                if ce_ltp > 0:
+                    mtm = (ce_leg["entry_price"] - ce_ltp) * int(ce_leg["qty"])
+                    with _owl_lock:
+                        _owl_state["last_ce_ltp"]   = ce_ltp
+                        _owl_state["ce_leg"]["mtm"] = round(mtm, 2)
+                    if mtm <= -sl:
+                        _owl_close_leg("ce", "SL")
+            if need_pe:
+                pe_ltp = float((quotes.get(f"NFO:{pe_leg['symbol']}") or {}).get("last_price") or 0)
+                if pe_ltp > 0:
+                    mtm = (pe_leg["entry_price"] - pe_ltp) * int(pe_leg["qty"])
+                    with _owl_lock:
+                        _owl_state["last_pe_ltp"]   = pe_ltp
+                        _owl_state["pe_leg"]["mtm"] = round(mtm, 2)
+                    if mtm <= -sl:
+                        _owl_close_leg("pe", "SL")
+            broadcast("owl_update")
+        except Exception as e:
+            print(f"[owl-tick] {e}")
+        time.sleep(2)
+
+
+def _owl_morning_loop():
+    """Once per day: setup at entry_time-1min, then enter at entry_time.
+    Honors `active=False` (kill switch) and skips weekends/holidays/expiry day."""
+    last_setup_for = None
+    last_entry_for = None
+    while True:
+        try:
+            now = _now_ist()
+            today = now.date()
+            if not _owl_config.get("active"):
+                time.sleep(15); continue
+            if not _is_trading_day(today):
+                time.sleep(60); continue
+            if _is_monthly_expiry_day(today):
+                # Mark skipped so UI reflects it
+                if _owl_state.get("session_date") != today.isoformat():
+                    _owl_setup_today()        # this branch sets skip_today=True
+                time.sleep(60); continue
+
+            entry_h, entry_m = [int(x) for x in (_owl_config.get("entry_time") or "09:20").split(":")]
+            entry_dt = now.replace(hour=entry_h, minute=entry_m, second=0, microsecond=0)
+            setup_dt = entry_dt - timedelta(minutes=1)
+
+            # Setup runs once per trading day, at entry_time - 1min
+            if last_setup_for != today and now >= setup_dt and now < entry_dt + timedelta(minutes=30):
+                _owl_setup_today()
+                last_setup_for = today
+
+            # Enter runs once per trading day, at entry_time
+            if last_entry_for != today and now >= entry_dt and now < entry_dt + timedelta(minutes=30):
+                # Make sure setup has run (e.g. if scheduler started mid-window)
+                if _owl_state.get("session_date") != today.isoformat():
+                    _owl_setup_today()
+                # Only enter if not skipped + symbols ready + no legs yet
+                with _owl_lock:
+                    s = dict(_owl_state)
+                if (not s.get("skip_today")) and s.get("ce_symbol") and s.get("pe_symbol") \
+                   and not s.get("ce_leg") and not s.get("pe_leg"):
+                    _owl_enter()
+                last_entry_for = today
+        except Exception as e:
+            print(f"[owl-morning] {e}")
+        time.sleep(15)
+
+
+def _owl_squareoff_loop():
+    """At exit_time, force-close any leg still open."""
+    last_run_for = None
+    while True:
+        try:
+            now = _now_ist()
+            today = now.date()
+            exit_h, exit_m = [int(x) for x in (_owl_config.get("exit_time") or "15:00").split(":")]
+            exit_dt = now.replace(hour=exit_h, minute=exit_m, second=0, microsecond=0)
+            if last_run_for != today and now >= exit_dt and now < exit_dt + timedelta(minutes=30):
+                with _owl_lock:
+                    ce = (_owl_state.get("ce_leg") or {})
+                    pe = (_owl_state.get("pe_leg") or {})
+                if ce.get("status") == "open":
+                    _owl_close_leg("ce", "EOD")
+                if pe.get("status") == "open":
+                    _owl_close_leg("pe", "EOD")
+                _owl_archive_today()
+                last_run_for = today
+        except Exception as e:
+            print(f"[owl-squareoff] {e}")
+        time.sleep(20)
+
+
+# Boot threads
+threading.Thread(target=_owl_morning_loop,   daemon=True).start()
+threading.Thread(target=_owl_tick_loop,      daemon=True).start()
+threading.Thread(target=_owl_squareoff_loop, daemon=True).start()
+
+
+# ── Owl routes ────────────────────────────────────────────────────────────────
+@app.route("/owl", methods=["GET"])
+def owl_route():
+    with _owl_lock:
+        s = dict(_owl_state)
+        cfg = dict(_owl_config)
+    return jsonify({
+        "ok":     True,
+        "config": cfg,
+        "state":  s,
+        "today":  _now_ist().date().isoformat(),
+        "is_expiry_day": _is_monthly_expiry_day(_now_ist().date()),
+    })
+
+
+@app.route("/owl/config", methods=["POST"])
+def owl_config_route():
+    d = request.json or {}
+    for k in ("entry_time", "exit_time"):
+        if k in d:
+            v = str(d[k]).strip()
+            # Tiny shape check: HH:MM
+            try:
+                h, m = [int(x) for x in v.split(":")]
+                if not (0 <= h < 24 and 0 <= m < 60):
+                    raise ValueError("out of range")
+                _owl_config[k] = f"{h:02d}:{m:02d}"
+            except Exception:
+                return jsonify({"ok": False, "error": f"{k} must be HH:MM"}), 400
+    for k in ("per_leg_sl", "otm_pct"):
+        if k in d:
+            try: _owl_config[k] = float(d[k])
+            except Exception:
+                return jsonify({"ok": False, "error": f"{k} must be a number"}), 400
+    if "lots" in d:
+        try:
+            v = int(d["lots"])
+            if v < 1:
+                return jsonify({"ok": False, "error": "lots must be ≥ 1"}), 400
+            _owl_config["lots"] = v
+        except Exception:
+            return jsonify({"ok": False, "error": "lots must be an integer"}), 400
+    if "paper_mode" in d:
+        _owl_config["paper_mode"] = bool(d["paper_mode"])
+    if "active" in d:
+        _owl_config["active"] = bool(d["active"])
+    _owl_save_config()
+    broadcast("owl_update")
+    return jsonify({"ok": True, "config": dict(_owl_config)})
+
+
+@app.route("/owl/enter", methods=["POST"])
+def owl_enter_route():
+    """Manual same-day entry — runs setup if needed, then enters.
+    Skips silently if today is expiry day or legs already exist."""
+    threading.Thread(target=_owl_manual_enter, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+def _owl_manual_enter():
+    today = _now_ist().date()
+    if _owl_state.get("session_date") != today.isoformat():
+        if not _owl_setup_today():
+            return
+    _owl_enter()
+
+
+@app.route("/owl/exit/<leg>", methods=["POST"])
+def owl_exit_route(leg: str):
+    leg = (leg or "").lower()
+    if leg not in ("ce", "pe", "both"):
+        return jsonify({"ok": False, "error": "leg must be ce/pe/both"}), 400
+    threading.Thread(target=_owl_manual_exit, args=(leg,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+def _owl_manual_exit(leg: str):
+    if leg in ("ce", "both"): _owl_close_leg("ce", "manual")
+    if leg in ("pe", "both"): _owl_close_leg("pe", "manual")
+    # If both are now closed, archive
+    with _owl_lock:
+        ce = (_owl_state.get("ce_leg") or {})
+        pe = (_owl_state.get("pe_leg") or {})
+    if (ce.get("status") in (None, "closed", "failed")) and (pe.get("status") in (None, "closed", "failed")):
+        _owl_archive_today()
+
+
+@app.route("/owl/history", methods=["GET"])
+def owl_history_route():
+    """Last N trading-day records. Read-only."""
+    n = int(request.args.get("n") or 30)
+    with _owl_lock:
+        hist = list(_owl_state.get("history") or [])
+    return jsonify({"ok": True, "history": hist[-n:]})
+
+
 # ── Calendar Spread (Phase A: monitor + log only, no orders) ──────────────────
 #
 # Tracks (near-month future, far-month future) on selected underlyings. For

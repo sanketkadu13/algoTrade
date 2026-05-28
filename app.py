@@ -1626,8 +1626,8 @@ def index():
 @app.route("/favicon.ico")
 def favicon_legacy():
     """Browsers request /favicon.ico before parsing the HTML <link>. Redirect
-    to the SVG so we don't 404 (clean log noise + faster tab icon)."""
-    return redirect(url_for("static", filename="favicon.svg"), code=301)
+    to the PNG so we don't 404 (clean log noise + faster tab icon)."""
+    return redirect(url_for("static", filename="favicon.png"), code=301)
 
 
 @app.route("/logout")

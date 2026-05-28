@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MTM Monitor</title>
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}?v=3">
+  <title>Sniper Eagle</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}?v=4">
   <!-- Fonts: using Comic Sans (system font on macOS/Windows) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&display=swap" rel="stylesheet">
@@ -102,6 +102,13 @@
     }
     .logo { font-family: var(--mono); font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
     .logo em { color: var(--text); font-style: normal; }
+    /* Sniper Eagle brand block in sidebar */
+    .brand { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px 0 8px 0; }
+    .brand-icon { width: 56px; height: 56px; display: block; }
+    .brand-wordmark { font-family: var(--mono); font-size: 14px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; line-height: 1; margin-top: 2px; }
+    .brand-wordmark .sniper { color: var(--text); }
+    .brand-wordmark .eagle  { color: var(--orange); }
+    .brand-tagline { font-family: var(--mono); font-size: 8px; letter-spacing: .25em; text-transform: uppercase; color: var(--dim); margin-top: 1px; }
     .topbar-right { display: flex; align-items: center; gap: 12px; }
     .conn-indicator { display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11px; letter-spacing: .08em; color: var(--dim); }
     .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); transition: background .3s; }
@@ -663,7 +670,9 @@
 
   <aside class="sidebar">
     <div class="brand">
-      <div class="logo">MTM <em>Monitor</em></div>
+      <img class="brand-icon" src="{{ url_for('static', filename='favicon.svg') }}?v=4" alt="Sniper Eagle">
+      <div class="brand-wordmark"><span class="sniper">SNIPER</span> <span class="eagle">EAGLE</span></div>
+      <div class="brand-tagline">Algo Trading Platform</div>
     </div>
 
     <!-- View toggle -->

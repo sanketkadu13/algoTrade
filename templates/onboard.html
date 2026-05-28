@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Onboard — Kite Dashboard</title>
-<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}?v=3">
+<title>Onboard — Sniper Eagle</title>
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}?v=4">
 <style>
   :root {
     --bg: #0d1117;
@@ -27,7 +27,12 @@
   body { min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; padding: 32px 16px; }
 
   .card { width: 100%; max-width: 560px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 28px 32px; }
-  .brand { font-size: 12px; letter-spacing: .18em; color: var(--muted); text-transform: uppercase; margin-bottom: 6px; }
+  .brand { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-bottom: 18px; }
+  .brand-icon { width: 64px; height: 64px; display: block; }
+  .brand-wordmark { font-family: var(--mono, ui-monospace, monospace); font-size: 18px; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; line-height: 1; }
+  .brand-wordmark .sniper { color: var(--text); }
+  .brand-wordmark .eagle  { color: #c9a155; }
+  .brand-tagline { font-family: var(--mono, ui-monospace, monospace); font-size: 9px; letter-spacing: .3em; text-transform: uppercase; color: var(--dim); }
   h1 { font-size: 22px; margin: 0 0 6px 0; font-weight: 700; }
   .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
 
@@ -59,7 +64,11 @@
 </head>
 <body>
   <div class="card">
-    <div class="brand">MTM <em>Monitor</em></div>
+    <div class="brand">
+      <img class="brand-icon" src="{{ url_for('static', filename='favicon.svg') }}?v=4" alt="Sniper Eagle">
+      <div class="brand-wordmark"><span class="sniper">SNIPER</span> <span class="eagle">EAGLE</span></div>
+      <div class="brand-tagline">Algo Trading Platform</div>
+    </div>
     <h1>Set up your dashboard</h1>
     <div class="sub">One-time form. Once you submit, your isolated trading dashboard will be ready in seconds.</div>
 

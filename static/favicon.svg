@@ -1,20 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Owl favicon. Tuned for 16x16 visibility: big high-contrast eyes,
-     bold ear tufts, simple silhouette. Palette matches dashboard CSS vars. -->
+<!-- Owl favicon. Tuned for 16x16 visibility: bold eyes, simple silhouette.
+     Palette matches the dashboard. No double hyphens inside this comment
+     because XML spec forbids the literal sequence within comments. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" shape-rendering="geometricPrecision">
-  <!-- Rounded dark background (#0d1117 = --bg) -->
   <rect width="64" height="64" rx="14" fill="#0d1117"/>
-  <!-- Ear tufts (drawn first so the body covers their bases) -->
   <path d="M10 22 L20 4 L30 22 Z" fill="#2ea043"/>
   <path d="M54 22 L44 4 L34 22 Z" fill="#2ea043"/>
-  <!-- Body — large, low-center for "perched owl" silhouette -->
   <circle cx="32" cy="38" r="26" fill="#2ea043"/>
-  <!-- Eyes — big gold rings (readable at 16x16) -->
   <circle cx="20" cy="32" r="10" fill="#e3b341"/>
   <circle cx="44" cy="32" r="10" fill="#e3b341"/>
-  <!-- Pupils — dark dots, large enough to survive downscaling -->
   <circle cx="20" cy="32" r="4" fill="#0d1117"/>
   <circle cx="44" cy="32" r="4" fill="#0d1117"/>
-  <!-- Beak — dark triangle for high contrast against green body -->
   <path d="M32 42 L27 49 L37 49 Z" fill="#0d1117"/>
 </svg>

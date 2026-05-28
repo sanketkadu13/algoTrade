@@ -1561,7 +1561,7 @@
           <thead>
             <tr style="color:var(--muted);border-bottom:1px solid var(--border-dim)">
               <th style="text-align:left;padding:6px 8px">Date</th>
-              <th style="text-align:right;padding:6px 8px">Open</th>
+              <th style="text-align:right;padding:6px 8px">Spot</th>
               <th style="text-align:right;padding:6px 8px">CE K</th>
               <th style="text-align:right;padding:6px 8px">PE K</th>
               <th style="text-align:right;padding:6px 8px">CE P&amp;L</th>
@@ -1587,15 +1587,18 @@
     <div class="panel" style="margin-top:0;background:rgba(46,160,67,.04);border-color:var(--border-dim)">
       <div class="panel-title">📖 How the Owl Method works</div>
       <div style="font-size:12px;line-height:1.65;color:var(--muted)">
-        <strong style="color:var(--text)">Premise.</strong> Any gap-up or gap-down already prices in overnight news. From the open, NIFTY's intraday range usually stays within ±1.5%.<br><br>
+        <strong style="color:var(--text)">Premise.</strong> The residual move after gap-open + early-session churn rarely exceeds ±1.5%. Selling 1.5%-OTM CE+PE collects theta against that bounded intraday move.<br><br>
 
         <strong style="color:var(--text)">Daily setup</strong> (executed every trading day except monthly expiry):
         <ol style="margin:6px 0 10px 18px;padding:0">
-          <li>Take NIFTY's <strong>open price</strong> for today (fetched via Kite OHLC).</li>
-          <li>Compute <strong>CE strike</strong> = nearest 50 to <code>Open × 1.015</code>.</li>
-          <li>Compute <strong>PE strike</strong> = nearest 50 to <code>Open × 0.985</code>.</li>
-          <li>SELL 1 lot CE + 1 lot PE of the current monthly expiry at the configured entry time.</li>
+          <li>At the configured entry time, fetch <strong>NIFTY spot LTP</strong> (live, not the day's open).</li>
+          <li>Compute <strong>CE strike</strong> = nearest 50 to <code>Spot × 1.015</code>.</li>
+          <li>Compute <strong>PE strike</strong> = nearest 50 to <code>Spot × 0.985</code>.</li>
+          <li>SELL 1 lot CE + 1 lot PE of the current monthly expiry.</li>
         </ol>
+        <div style="color:var(--dim);font-size:11px;margin:-4px 0 12px 18px">
+          <em>Note:</em> the original transcript anchors strikes off the open price because his backtests need a fixed historical reference. For live execution we use CMP at trigger so the buffer reflects where price actually IS when you enter, not where it opened hours ago.
+        </div>
 
         <strong style="color:var(--text)">Stop-loss + exit.</strong> ₹2,000 per leg (independent). If a leg hits SL, close <strong>only that leg</strong>; the other keeps running until the configured exit time. If neither leg hits SL, both close at exit time. Worst-case daily loss ≈ ₹4,000 (both legs SL'd).<br><br>
 
@@ -2765,7 +2768,7 @@
       body.innerHTML = '<div style="color:var(--orange)">⊘ Monthly expiry day — Owl rule says skip. No entry today.</div>';
     } else if (s.skip_today) {
       body.innerHTML = `<div style="color:var(--orange)">⊘ Skipped: ${s.skip_reason || 'manual'}</div>`;
-    } else if (!s.open_price) {
+    } else if (!s.anchor_price) {
       body.innerHTML = '<div style="color:var(--dim)">Awaiting setup. Will arm at <strong>' + (cfg.entry_time || '09:20') + '</strong>, or hit "Enter Now" to trigger manually.</div>';
     } else {
       const ce = s.ce_leg, pe = s.pe_leg;
@@ -2773,8 +2776,8 @@
       body.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:10px;border-bottom:1px solid var(--border-dim)">
           <div>
-            <div style="color:var(--muted);font-size:11px">NIFTY open</div>
-            <div style="font-size:18px">₹${Number(s.open_price).toFixed(2)}</div>
+            <div style="color:var(--muted);font-size:11px">NIFTY @ entry</div>
+            <div style="font-size:18px">₹${Number(s.anchor_price).toFixed(2)}</div>
             <div style="color:var(--dim);font-size:10px;margin-top:2px">Expiry ${s.expiry || '—'}</div>
           </div>
           <div style="text-align:right">
@@ -2821,7 +2824,7 @@
       }
       return `<tr style="border-bottom:1px solid var(--border-dim)">
         <td style="padding:6px 8px">${r.date}</td>
-        <td style="padding:6px 8px;text-align:right">${r.open_price?.toFixed?.(2) ?? '—'}</td>
+        <td style="padding:6px 8px;text-align:right">${r.anchor_price?.toFixed?.(2) ?? '—'}</td>
         <td style="padding:6px 8px;text-align:right">${r.ce_strike ?? '—'}</td>
         <td style="padding:6px 8px;text-align:right">${r.pe_strike ?? '—'}</td>
         <td style="padding:6px 8px;text-align:right;color:${_owlMtmColor(cePnl)}">${Number(cePnl).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
@@ -2858,7 +2861,7 @@
   }
 
   async function owlEnterNow() {
-    if (!confirm('Enter Owl strangle now?\n\nThis will compute today\'s CE/PE strikes from NIFTY open and place SELL orders (or paper-record them if Paper mode is on).')) return;
+    if (!confirm('Enter Owl strangle now?\n\nThis will fetch NIFTY spot, compute today\'s CE/PE strikes (±1.5% from spot), and place SELL orders (or paper-record them if Paper mode is on).')) return;
     const r = await fetch('/owl/enter', { method: 'POST' });
     const d = await r.json();
     _owlSetResult('owl-action-result', !!d.ok, d.ok ? 'Entering…' : (d.error || 'Failed.'));

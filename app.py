@@ -4489,15 +4489,17 @@ def straddle_skip_today_route():
 # ── Owl Method (1.5%-OTM monthly strangle, intraday) ──────────────────────────
 #
 # Strategy: at configured entry time (default 09:20 IST), short:
-#   CE strike = round( open_price * 1.015 / 50 ) * 50
-#   PE strike = round( open_price * 0.985 / 50 ) * 50
-# on NIFTY monthly expiry. Per-leg SL ₹2,000 (independent). Other leg keeps
+#   CE strike = round( anchor * 1.015 / 50 ) * 50
+#   PE strike = round( anchor * 0.985 / 50 ) * 50
+# where `anchor` = NIFTY spot LTP at entry trigger (NOT the official open).
+# On NIFTY monthly expiry. Per-leg SL ₹2,000 (independent). Other leg keeps
 # running until exit_time (default 15:00 IST). Skip monthly expiry day.
 # Paper-trade mode supported (default ON until user explicitly switches).
 #
-# Rationale (from Mahesh Chandra Kaushik's "Ullu Vidhi"): intraday move from
-# open price rarely exceeds ±1.5% — gap up/down already discounts overnight
-# news. Selling 1.5%-OTM CE+PE collects theta against that bounded move.
+# Rationale (from Mahesh Chandra Kaushik's "Ullu Vidhi"): the residual move
+# after gap-open + first-hour churn rarely exceeds ±1.5%. The transcript uses
+# open price because his backtests need a fixed historical reference; for live
+# execution, CMP at the moment the trader actually enters is the right anchor.
 
 _NIFTY_LOT       = 65                  # current lot size as of 2026
 _OWL_STRIKE_STEP = 50                  # NIFTY strike interval
@@ -4517,7 +4519,7 @@ _owl_config = {
 
 _owl_state: dict = {
     "session_date":  None,              # YYYY-MM-DD of today's setup (if any)
-    "open_price":    None,
+    "anchor_price":  None,              # NIFTY spot at the moment of entry trigger
     "expiry":        None,              # ISO date string of monthly expiry used
     "ce_strike":     None,
     "pe_strike":     None,
@@ -4610,18 +4612,22 @@ def _owl_nearest_strike(target: float) -> int:
     return int(round(target / _OWL_STRIKE_STEP) * _OWL_STRIKE_STEP)
 
 
-def _owl_fetch_open_price() -> float | None:
-    """NIFTY 50 index open price for today, via kite.ohlc.
+def _owl_fetch_spot_price() -> float | None:
+    """NIFTY 50 spot at *this moment* — used as the 1.5%-OTM anchor.
 
-    The OHLC payload's `open` is the official exchange open (settled by 09:15:00)
-    so it's stable from 09:15:15 onward — safe to call any time during session.
+    We deliberately use live LTP (not the day's official OHLC.open) because the
+    entry time is user-configurable: if the user sets entry to 09:45 and NIFTY
+    has moved 0.7% from open by then, the 1.5% buffer should be measured from
+    where price IS at trigger, not where it opened. The transcript uses open
+    price as a backtest convenience (need a fixed reference for historical
+    rows) — in live execution, CMP at entry is the right anchor.
     """
     try:
-        o = kite.ohlc(["NSE:NIFTY 50"])["NSE:NIFTY 50"].get("ohlc") or {}
-        op = float(o.get("open") or 0)
-        return op if op > 0 else None
+        q = kite.quote(["NSE:NIFTY 50"])["NSE:NIFTY 50"]
+        spot = float(q.get("last_price") or 0)
+        return spot if spot > 0 else None
     except Exception as e:
-        print(f"[owl] open-price fetch: {e}")
+        print(f"[owl] spot fetch: {e}")
         return None
 
 
@@ -4650,16 +4656,16 @@ def _owl_setup_today() -> bool:
         broadcast("owl_update")
         return False
 
-    op = _owl_fetch_open_price()
-    if not op:
+    spot = _owl_fetch_spot_price()
+    if not spot:
         with _owl_lock:
-            _owl_state["last_error"] = "could not fetch NIFTY open price"
-        _owl_log("setup_failed", reason="no_open_price")
+            _owl_state["last_error"] = "could not fetch NIFTY spot"
+        _owl_log("setup_failed", reason="no_spot_price")
         return False
 
     pct    = float(_owl_config.get("otm_pct") or 1.5) / 100.0
-    ce_str = _owl_nearest_strike(op * (1 + pct))
-    pe_str = _owl_nearest_strike(op * (1 - pct))
+    ce_str = _owl_nearest_strike(spot * (1 + pct))
+    pe_str = _owl_nearest_strike(spot * (1 - pct))
     expiry = _current_monthly_expiry(today)
     ce_sym = _nifty_option_symbol(ce_str, "CE", expiry)
     pe_sym = _nifty_option_symbol(pe_str, "PE", expiry)
@@ -4667,7 +4673,7 @@ def _owl_setup_today() -> bool:
     with _owl_lock:
         _owl_state.update({
             "session_date":  today.isoformat(),
-            "open_price":    round(op, 2),
+            "anchor_price":  round(spot, 2),
             "expiry":        expiry.isoformat(),
             "ce_strike":     ce_str, "pe_strike": pe_str,
             "ce_symbol":     ce_sym, "pe_symbol": pe_sym,
@@ -4678,11 +4684,11 @@ def _owl_setup_today() -> bool:
             "lifecycle":     "armed",
         })
     _owl_log("setup",
-             open_price=round(op, 2), expiry=expiry.isoformat(),
+             anchor_price=round(spot, 2), expiry=expiry.isoformat(),
              ce_strike=ce_str, pe_strike=pe_str,
              ce_symbol=ce_sym, pe_symbol=pe_sym)
     _telegram(
-        f"🦉 *Owl armed* — NIFTY open ₹{op:.2f} ({expiry.strftime('%d-%b')})\n"
+        f"🦉 *Owl armed* — NIFTY @ entry ₹{spot:.2f} ({expiry.strftime('%d-%b')})\n"
         f"CE: `{ce_sym}`  · PE: `{pe_sym}`\n"
         f"Mode: *{'PAPER' if _owl_config['paper_mode'] else 'LIVE'}*"
     )
@@ -4879,7 +4885,7 @@ def _owl_archive_today() -> None:
     pe = s.get("pe_leg") or {}
     record = {
         "date":         s["session_date"],
-        "open_price":   s.get("open_price"),
+        "anchor_price": s.get("anchor_price"),
         "expiry":       s.get("expiry"),
         "ce_strike":    s.get("ce_strike"),
         "pe_strike":    s.get("pe_strike"),

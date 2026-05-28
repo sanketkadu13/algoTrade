@@ -21,6 +21,20 @@ server {
         proxy_set_header   Connection        "";
     }
 
+    # Static assets (favicon, future css/images) — public; needed pre-auth.
+    location /static/ {
+        auth_basic off;
+        proxy_pass         http://127.0.0.1:%%FLASK_PORT%%;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+    }
+    location = /favicon.ico {
+        auth_basic off;
+        proxy_pass         http://127.0.0.1:%%FLASK_PORT%%;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+    }
+
     # SSE-friendly proxy to this user's Flask app on localhost
     location / {
         proxy_pass         http://127.0.0.1:%%FLASK_PORT%%;

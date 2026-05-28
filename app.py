@@ -15,7 +15,7 @@ from dotenv import load_dotenv, set_key
 import io
 import zipfile
 
-from flask import Flask, Response, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, url_for
 from kiteconnect import KiteConnect
 
 # Load .env from DATA_DIR if set (so each user instance gets its own creds),
@@ -1620,6 +1620,13 @@ threading.Thread(target=_telegram_bot_loop, daemon=True).start()
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/favicon.ico")
+def favicon_legacy():
+    """Browsers request /favicon.ico before parsing the HTML <link>. Redirect
+    to the SVG so we don't 404 (clean log noise + faster tab icon)."""
+    return redirect(url_for("static", filename="favicon.svg"), code=301)
 
 
 @app.route("/logout")

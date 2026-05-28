@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" shape-rendering="geometricPrecision">
+  <!-- Rounded dark background matching the dashboard's --bg (#0d1117) -->
+  <rect width="64" height="64" rx="14" fill="#0d1117"/>
+  <!-- Body (large round) -->
+  <circle cx="32" cy="36" r="22" fill="#2ea043"/>
+  <!-- Ear tufts -->
+  <path d="M14 22 L19 9 L25 23 Z" fill="#2ea043"/>
+  <path d="M50 22 L45 9 L39 23 Z" fill="#2ea043"/>
+  <!-- Eye sockets (dark) -->
+  <circle cx="24" cy="30" r="8" fill="#0d1117"/>
+  <circle cx="40" cy="30" r="8" fill="#0d1117"/>
+  <!-- Outer iris ring (gold accent — matches --orange #e3b341) -->
+  <circle cx="24" cy="30" r="5" fill="#e3b341"/>
+  <circle cx="40" cy="30" r="5" fill="#e3b341"/>
+  <!-- Pupils -->
+  <circle cx="24" cy="30" r="2.2" fill="#0d1117"/>
+  <circle cx="40" cy="30" r="2.2" fill="#0d1117"/>
+  <!-- Beak -->
+  <path d="M32 39 L28.5 44 L35.5 44 Z" fill="#e3b341"/>
+</svg>

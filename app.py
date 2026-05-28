@@ -1289,21 +1289,31 @@ threading.Thread(target=_eod_warning_scheduler, daemon=True).start()
 
 
 # ── Telegram bot (long-polling, bidirectional) ────────────────────────────────
-_TG_TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
-_TG_CHAT_ID = str(os.getenv("TELEGRAM_CHAT_ID", ""))
-_TG_API     = f"https://api.telegram.org/bot{_TG_TOKEN}" if _TG_TOKEN else None
+# Token/chat_id read from os.environ on every call so the UI's
+# /config/telegram POST can hot-update them without a process restart.
+def _tg_token() -> str:
+    return os.getenv("TELEGRAM_TOKEN", "")
+
+def _tg_chat_id() -> str:
+    return str(os.getenv("TELEGRAM_CHAT_ID", ""))
+
+def _tg_api() -> str:
+    t = _tg_token()
+    return f"https://api.telegram.org/bot{t}" if t else ""
+
 _tg_last_update_id = 0
 _tg_pending: dict = {}        # chat_id -> {action, args, expires_at}
 
 def _tg_send_reply(text: str):
     """Send a Telegram message (Markdown). Returns bool."""
-    if not _TG_API or not _TG_CHAT_ID:
+    api, chat_id = _tg_api(), _tg_chat_id()
+    if not api or not chat_id:
         return False
     try:
         data = urllib.parse.urlencode({
-            "chat_id": _TG_CHAT_ID, "text": text, "parse_mode": "Markdown"
+            "chat_id": chat_id, "text": text, "parse_mode": "Markdown"
         }).encode()
-        urllib.request.urlopen(f"{_TG_API}/sendMessage", data=data, timeout=10)
+        urllib.request.urlopen(f"{api}/sendMessage", data=data, timeout=10)
         return True
     except Exception as e:
         print(f"[tg-send] {e}")
@@ -1550,27 +1560,38 @@ def _handle_pending(chat_id: str, text: str) -> bool:
     return False
 
 def _telegram_bot_loop():
-    """Long-poll Telegram getUpdates. Only chat_id == TELEGRAM_CHAT_ID is allowed."""
+    """Long-poll Telegram getUpdates. Only chat_id == TELEGRAM_CHAT_ID is allowed.
+
+    Re-reads token/chat_id every iteration so a UI save via /config/telegram
+    starts (or stops) polling without needing a process restart.
+    """
     global _tg_last_update_id
-    if not _TG_API or not _TG_CHAT_ID:
-        print("[tg-bot] disabled — TELEGRAM_TOKEN/CHAT_ID missing")
-        return
-    print(f"[tg-bot] polling started for chat_id={_TG_CHAT_ID}")
+    last_state = None     # "active" | "waiting"
     while True:
+        api, chat_id = _tg_api(), _tg_chat_id()
+        if not api or not chat_id:
+            if last_state != "waiting":
+                print("[tg-bot] idle — TELEGRAM_TOKEN/CHAT_ID not configured; will re-check periodically")
+                last_state = "waiting"
+            time.sleep(30)
+            continue
+        if last_state != "active":
+            print(f"[tg-bot] polling started for chat_id={chat_id}")
+            last_state = "active"
         try:
             params = urllib.parse.urlencode({"offset": _tg_last_update_id + 1, "timeout": 30})
-            req = urllib.request.Request(f"{_TG_API}/getUpdates?{params}")
+            req = urllib.request.Request(f"{api}/getUpdates?{params}")
             with urllib.request.urlopen(req, timeout=40) as resp:
                 payload = json.loads(resp.read().decode())
             for upd in payload.get("result", []):
                 _tg_last_update_id = max(_tg_last_update_id, upd.get("update_id", 0))
                 m = upd.get("message") or upd.get("edited_message") or {}
-                chat_id = str(m.get("chat", {}).get("id") or "")
+                msg_chat_id = str(m.get("chat", {}).get("id") or "")
                 text = (m.get("text") or "").strip()
-                if not chat_id or not text:
+                if not msg_chat_id or not text:
                     continue
-                if chat_id != _TG_CHAT_ID:
-                    print(f"[tg-bot] unauthorized chat_id {chat_id}")
+                if msg_chat_id != chat_id:
+                    print(f"[tg-bot] unauthorized chat_id {msg_chat_id}")
                     continue
                 # Pending confirmation first
                 if _handle_pending(chat_id, text):
@@ -2222,6 +2243,103 @@ def update_config(sid: str):
             _telegram(f"⚙️ *Config changed mid-session* [{s_now['name']}]\n" + "\n".join(diffs))
     broadcast()
     return jsonify({"ok": True})
+
+# ── Telegram alert configuration ──────────────────────────────────────────────
+def _mask_tg_token(t: str) -> str:
+    """Show only the last 4 chars so the UI can confirm 'something is set'
+    without leaking the full bot token."""
+    if not t:
+        return ""
+    if len(t) <= 8:
+        return "•" * len(t)
+    return ("•" * (len(t) - 4)) + t[-4:]
+
+
+@app.route("/config/telegram", methods=["GET"])
+def telegram_config_get():
+    """Return current Telegram config (token is masked)."""
+    token   = _tg_token()
+    chat_id = _tg_chat_id()
+    return jsonify({
+        "ok":           True,
+        "configured":   bool(token and chat_id),
+        "token_masked": _mask_tg_token(token),
+        "chat_id":      chat_id,
+    })
+
+
+@app.route("/config/telegram", methods=["POST"])
+def telegram_config_set():
+    """Save Telegram config to this instance's .env and hot-update os.environ.
+
+    Body:
+      {token: str, chat_id: str}        # set both
+      {token: "", chat_id: ""}          # clear (disables alerts + bot)
+
+    The send helper + bot loop both read os.environ on every call/iteration
+    so the change takes effect immediately — no process restart needed.
+    """
+    d = request.json or {}
+    token   = (d.get("token") or "").strip()
+    chat_id = (d.get("chat_id") or "").strip()
+
+    # Shape checks. Empty-both is a valid "clear" request, so only validate
+    # when at least one field is non-empty.
+    if token or chat_id:
+        if not token or not chat_id:
+            return jsonify({"ok": False, "error": "Both token and chat_id are required (or both empty to clear)"}), 400
+        # Bot tokens look like "<digits>:<base64-ish>" — a loose check, not a strict regex
+        if ":" not in token or len(token) < 20:
+            return jsonify({"ok": False, "error": "Token doesn't look like a Telegram bot token (expected '<digits>:<long string>')"}), 400
+        if not chat_id.lstrip("-").isdigit():
+            return jsonify({"ok": False, "error": "chat_id must be a number (positive for users, negative for groups)"}), 400
+
+    env_path = os.path.join(DATA_DIR, ".env")
+    try:
+        set_key(env_path, "TELEGRAM_TOKEN",   token)
+        set_key(env_path, "TELEGRAM_CHAT_ID", chat_id)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"failed to write .env: {e}"}), 500
+    # Update process env so live readers (_telegram, _tg_send_reply, bot loop)
+    # see the new values without restart.
+    os.environ["TELEGRAM_TOKEN"]   = token
+    os.environ["TELEGRAM_CHAT_ID"] = chat_id
+
+    return jsonify({"ok": True, "configured": bool(token and chat_id)})
+
+
+@app.route("/config/telegram/test", methods=["POST"])
+def telegram_config_test():
+    """Send a test message using *currently configured* creds. Returns the
+    actual Telegram API response so the user sees the real error (bad token,
+    bad chat_id, bot not started, etc.) instead of a generic 'failed'.
+    """
+    token   = _tg_token()
+    chat_id = _tg_chat_id()
+    if not token or not chat_id:
+        return jsonify({"ok": False, "error": "Telegram not configured. Save token + chat_id first."}), 400
+    try:
+        data = urllib.parse.urlencode({
+            "chat_id":    chat_id,
+            "text":       "✓ Kite dashboard test message — Telegram alerts are working.",
+            "parse_mode": "Markdown",
+        }).encode()
+        with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=10) as resp:
+            body = json.loads(resp.read().decode())
+        if body.get("ok"):
+            return jsonify({"ok": True, "message": "Test message sent. Check Telegram."})
+        return jsonify({"ok": False, "error": body.get("description") or "Telegram API returned ok=false"}), 400
+    except urllib.error.HTTPError as e:
+        # Surface the real reason (404 = bad token, 400 = bad chat_id, etc.)
+        try:
+            body = json.loads(e.read().decode())
+            err  = body.get("description") or str(e)
+        except Exception:
+            err  = f"{e.code} {e.reason}"
+        return jsonify({"ok": False, "error": f"Telegram API: {err}"}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"network error: {e}"}), 500
+
 
 # ── Arbitrage (Future ↔ Synthetic Future) ─────────────────────────────────────
 _ARB_UNDERLYINGS = {

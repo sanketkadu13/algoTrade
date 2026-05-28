@@ -674,6 +674,7 @@
       <button id="vt-straddle"   class="vt-btn"           onclick="switchView('straddle')">🎯 Straddle</button>
       <button id="vt-interarb"   class="vt-btn"           onclick="switchView('interarb')">🔁 NSE↔BSE</button>
       <button id="vt-commarb"    class="vt-btn"           onclick="switchView('commarb')">⛽ Comm Lot</button>
+      <button id="vt-alerts"     class="vt-btn"           onclick="switchView('alerts')">📱 Alerts</button>
       <button id="vt-admin"      class="vt-btn"           onclick="switchView('admin')" style="display:none">👥 Admin</button>
     </div>
 
@@ -1488,6 +1489,92 @@
 
   </div>
 
+  <!-- ═══════════════════════════════ ALERTS VIEW ═══════════════════════════════ -->
+  <div id="view-alerts" style="display:none">
+
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>📱 Telegram Alerts <span id="tg-status-badge" style="font-weight:normal;font-size:11px;margin-left:8px"></span></span>
+        <button class="btn-save" onclick="loadTelegramConfig()" style="border-color:var(--blue);color:var(--blue);width:auto;padding:5px 11px">↻ Refresh</button>
+      </div>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.5">
+        Hook up a Telegram bot and the dashboard will DM you on entries, exits, trailing-SL hits, IP changes, EOD summaries, and more. You can also send commands back (<code>/status</code>, <code>/positions</code>, <code>/exit</code>, etc.) — full list in <code>/help</code> once connected.
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr;gap:12px;max-width:560px">
+        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12px">
+          Bot token
+          <input type="password" id="tg-token" placeholder="e.g. 1234567890:AAH•••••••••••••••••••" autocomplete="off" spellcheck="false">
+          <span style="color:var(--dim);font-size:10px">From <a href="https://t.me/BotFather" target="_blank" rel="noopener" style="color:var(--blue)">@BotFather</a>. Looks like <code>&lt;digits&gt;:&lt;long string&gt;</code>.</span>
+        </label>
+
+        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12px">
+          Chat ID
+          <input type="text" id="tg-chat-id" placeholder="e.g. 7463750249 or -1001234567890" autocomplete="off" spellcheck="false">
+          <span style="color:var(--dim);font-size:10px">Personal chat → positive number. Group → starts with <code>-100</code>.</span>
+        </label>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:4px">
+          <button class="btn-save" onclick="saveTelegramConfig()"  style="border-color:var(--green);color:var(--green-hi);width:auto;padding:7px 16px">Save</button>
+          <button class="btn-save" onclick="testTelegramConfig()"  style="border-color:var(--blue);color:var(--blue);width:auto;padding:7px 16px">Send test message</button>
+          <button class="btn-save" onclick="clearTelegramConfig()" style="border-color:var(--red);color:var(--red);width:auto;padding:7px 16px">Disable alerts</button>
+        </div>
+        <div id="tg-result" style="font-family:var(--mono);font-size:12px;min-height:18px"></div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title">📖 How to set this up (one-time, ~3 minutes)</div>
+      <div style="font-size:13px;line-height:1.65;color:var(--text)">
+
+        <div style="margin-top:6px"><strong style="color:var(--blue-hi)">Step 1 — Create your bot</strong></div>
+        <ol style="margin:6px 0 14px 18px;padding:0;color:var(--muted)">
+          <li>Open Telegram and message <a href="https://t.me/BotFather" target="_blank" rel="noopener" style="color:var(--blue)">@BotFather</a>.</li>
+          <li>Send <code>/newbot</code>.</li>
+          <li>Pick a display name (e.g. <em>"Kite Monitor"</em>) — shown in chat headers.</li>
+          <li>Pick a username — must end in <code>bot</code> (e.g. <code>my_kite_alerts_bot</code>).</li>
+          <li>BotFather replies with a token like <code style="color:var(--orange)">1234567890:AAH•••••••••</code>. Copy it — that's the <strong>Bot token</strong> field above.</li>
+        </ol>
+
+        <div><strong style="color:var(--blue-hi)">Step 2 — Find your chat ID</strong></div>
+        <ol style="margin:6px 0 14px 18px;padding:0;color:var(--muted)">
+          <li>In Telegram, search for your new bot by username and open the chat.</li>
+          <li>Tap <strong>Start</strong> (or send any message). This is required — bots cannot DM users who haven't initiated the chat first.</li>
+          <li>Now message <a href="https://t.me/userinfobot" target="_blank" rel="noopener" style="color:var(--blue)">@userinfobot</a> with <code>/start</code>. It replies with your numeric ID — that's the <strong>Chat ID</strong>.</li>
+          <li><span style="color:var(--dim)">Group chats: add the bot to the group, send any message, then visit <code>https://api.telegram.org/bot&lt;token&gt;/getUpdates</code> in a browser — look for <code>"chat":{"id":-100...}</code>.</span></li>
+        </ol>
+
+        <div><strong style="color:var(--blue-hi)">Step 3 — Save + test</strong></div>
+        <ol style="margin:6px 0 14px 18px;padding:0;color:var(--muted)">
+          <li>Paste the token and chat ID above, hit <strong>Save</strong>.</li>
+          <li>Hit <strong>Send test message</strong> — you should get a DM within a second.</li>
+          <li>If the test fails: most common cause is forgetting Step 2.2 (you must press Start on your bot first). Other causes the API returns clearly: bad token = "Unauthorized", wrong chat_id = "chat not found".</li>
+        </ol>
+
+        <div><strong style="color:var(--blue-hi)">Step 4 — Try the bot</strong></div>
+        <div style="margin:6px 0 4px 18px;color:var(--muted)">
+          Once connected, send <code>/help</code> to your bot to see all commands. A few of the most useful:
+          <ul style="margin:6px 0 0 0;padding-left:18px">
+            <li><code>/status</code> — running strategies + today's P&amp;L</li>
+            <li><code>/positions</code> — live Kite positions</li>
+            <li><code>/exit &lt;sid&gt;</code> — square off a strategy (asks for confirmation)</li>
+            <li><code>/pause</code> / <code>/resume</code> — toggle auto-entry for the day</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:0;background:rgba(227,179,65,.05);border-color:var(--orange)">
+      <div class="panel-title" style="color:var(--orange)">⚠ Security notes</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.6">
+        • Your bot token is a credential — anyone with it can DM as your bot. We store it in this instance's <code>.env</code> (chmod 600) and never log it.<br>
+        • The bot only accepts commands from the chat ID you save here. Messages from any other chat are ignored.<br>
+        • If you ever leak a token, message <a href="https://t.me/BotFather" target="_blank" rel="noopener" style="color:var(--blue)">@BotFather</a> → <code>/revoke</code> to invalidate it, then save the new token here.
+      </div>
+    </div>
+
+  </div>
+
   <!-- ═══════════════════════════════ ADMIN VIEW ════════════════════════════════ -->
   <!-- Only ever shown when /admin/state returns 200 (i.e., this instance has ADMIN_ENABLED=true) -->
   <div id="view-admin" style="display:none">
@@ -1871,6 +1958,7 @@
     document.getElementById('view-straddle').style.display    = (v === 'straddle')   ? '' : 'none';
     document.getElementById('view-interarb').style.display    = (v === 'interarb')   ? '' : 'none';
     document.getElementById('view-commarb').style.display     = (v === 'commarb')    ? '' : 'none';
+    document.getElementById('view-alerts').style.display      = (v === 'alerts')     ? '' : 'none';
     document.getElementById('view-admin').style.display       = (v === 'admin')      ? '' : 'none';
     document.getElementById('vt-strategies').classList.toggle('vt-active', v === 'strategies');
     document.getElementById('vt-scheduled').classList.toggle('vt-active', v === 'scheduled');
@@ -1879,6 +1967,7 @@
     document.getElementById('vt-straddle').classList.toggle('vt-active', v === 'straddle');
     document.getElementById('vt-interarb').classList.toggle('vt-active', v === 'interarb');
     document.getElementById('vt-commarb').classList.toggle('vt-active', v === 'commarb');
+    document.getElementById('vt-alerts').classList.toggle('vt-active', v === 'alerts');
     document.getElementById('vt-admin').classList.toggle('vt-active', v === 'admin');
     // Re-render tabs with new filter
     if (lastData?.strategies) renderTabs(lastData.strategies, lastData.strategy_order || []);
@@ -1908,6 +1997,9 @@
     }
     if (v === 'admin') {
       loadAdmin();
+    }
+    if (v === 'alerts') {
+      loadTelegramConfig();
     }
   }
 
@@ -2452,6 +2544,103 @@
   setInterval(() => {
     if (currentView === 'admin') loadAdmin();
   }, 5000);
+
+  // ── Telegram alerts config ────────────────────────────────────────────────
+  async function loadTelegramConfig() {
+    const badge   = document.getElementById('tg-status-badge');
+    const tokenEl = document.getElementById('tg-token');
+    const chatEl  = document.getElementById('tg-chat-id');
+    const result  = document.getElementById('tg-result');
+    if (result) result.textContent = '';
+    try {
+      const r = await fetch('/config/telegram');
+      const d = await r.json();
+      if (!d.ok) {
+        badge.innerHTML  = '<span style="color:var(--red-hi)">● load failed</span>';
+        return;
+      }
+      // Show the saved chat_id (it's not a secret — the bot token is).
+      chatEl.value = d.chat_id || '';
+      // Use masked token as placeholder; leave the input blank so submitting
+      // an empty token doesn't accidentally overwrite the saved one. Users
+      // re-enter the full token only when changing it.
+      tokenEl.value = '';
+      tokenEl.placeholder = d.configured
+        ? `Saved: ${d.token_masked}  (leave blank to keep)`
+        : 'e.g. 1234567890:AAH•••••••••••••';
+      if (d.configured) {
+        badge.innerHTML = '<span style="color:var(--green-hi)">● configured</span>';
+      } else {
+        badge.innerHTML = '<span style="color:var(--dim)">● not configured</span>';
+      }
+    } catch (e) {
+      badge.innerHTML = '<span style="color:var(--red-hi)">● load failed</span>';
+    }
+  }
+
+  function _tgSetResult(ok, msg) {
+    const el = document.getElementById('tg-result');
+    const color = ok ? 'var(--green-hi)' : 'var(--red-hi)';
+    const icon  = ok ? '✓' : '⚠';
+    el.innerHTML = `<span style="color:${color}">${icon} ${msg}</span>`;
+  }
+
+  async function saveTelegramConfig() {
+    const tokenInput = document.getElementById('tg-token').value.trim();
+    const chatId     = document.getElementById('tg-chat-id').value.trim();
+    if (!chatId) { _tgSetResult(false, 'Chat ID is required.'); return; }
+
+    // If the token field is blank AND we already have one saved, this is a
+    // "keep token, only update chat_id" case — fetch current state to get
+    // a real (masked) marker so we can preserve the existing token.
+    let token = tokenInput;
+    if (!token) {
+      const cur = await (await fetch('/config/telegram')).json();
+      if (!cur.configured) {
+        _tgSetResult(false, 'Bot token is required (no token currently saved).');
+        return;
+      }
+      // The backend doesn't expose the real token, so we can't "preserve" it
+      // by re-sending it. We send a sentinel and have the backend treat
+      // empty-token-with-existing-chat_id as a no-op for token... but to
+      // keep the backend simple, just tell the user to re-paste.
+      _tgSetResult(false, 'Token field is blank — paste the full token to save, or hit "Disable alerts" to clear.');
+      return;
+    }
+
+    const r = await fetch('/config/telegram', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ token, chat_id: chatId }),
+    });
+    const d = await r.json();
+    if (!d.ok) { _tgSetResult(false, d.error || 'Save failed.'); return; }
+    _tgSetResult(true, 'Saved. Click "Send test message" to verify.');
+    loadTelegramConfig();
+  }
+
+  async function testTelegramConfig() {
+    _tgSetResult(true, 'Sending…');
+    const r = await fetch('/config/telegram/test', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) { _tgSetResult(false, d.error || 'Test failed.'); return; }
+    _tgSetResult(true, d.message || 'Test message sent. Check Telegram.');
+  }
+
+  async function clearTelegramConfig() {
+    if (!confirm('Disable Telegram alerts?\n\nAll outgoing alerts stop and the bot stops listening for commands. Your token + chat_id are removed from this instance\'s .env. You can re-enable any time by saving them again.')) return;
+    const r = await fetch('/config/telegram', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ token: '', chat_id: '' }),
+    });
+    const d = await r.json();
+    if (!d.ok) { _tgSetResult(false, d.error || 'Clear failed.'); return; }
+    _tgSetResult(true, 'Alerts disabled.');
+    document.getElementById('tg-token').value   = '';
+    document.getElementById('tg-chat-id').value = '';
+    loadTelegramConfig();
+  }
 
   // ── Inter-Exchange (NSE ↔ BSE) ───────────────────────────────────────────
   async function loadInterarb() {

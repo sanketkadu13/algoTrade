@@ -81,8 +81,48 @@ def _make_strategy(name: str, sid: str, type_: str = "custom") -> dict:
 
 _CONFIG_FILE = os.path.join(DATA_DIR, "strategies.json")
 
+
+def _atomic_json_dump(path: str, obj) -> None:
+    """Write JSON to `path` atomically: write to a tmp file, fsync, then rename.
+    Prevents partial / truncated files from being readable on restart, which
+    was the root cause of strategies vanishing after Flask restarts."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _load_module_config_into(name: str, target: dict) -> None:
+    """Overlay disk-persisted module config (DATA_DIR/data/<name>_config.json)
+    onto `target` in place. Unknown keys on disk are ignored so removing a
+    field from code doesn't blow up on restart. Missing file = use defaults."""
+    path = os.path.join(DATA_DIR, "data", f"{name}_config.json")
+    try:
+        if not os.path.exists(path):
+            return
+        with open(path) as f:
+            disk = json.load(f)
+        for k, v in disk.items():
+            if k in target:
+                target[k] = v
+    except Exception as e:
+        print(f"[{name}] config load failed: {e}")
+
+
+def _save_module_config(name: str, cfg: dict) -> None:
+    """Atomic write of a module config dict to DATA_DIR/data/<name>_config.json."""
+    path = os.path.join(DATA_DIR, "data", f"{name}_config.json")
+    try:
+        _atomic_json_dump(path, cfg)
+    except Exception as e:
+        print(f"[{name}] config save failed: {e}")
+
+
 def _save_config():
-    """Persist all strategy configs to strategies.json."""
+    """Persist all strategy configs to strategies.json. Atomic write."""
     data = {}
     with _lock:
         for i, sid in enumerate(strategy_order):
@@ -103,15 +143,23 @@ def _save_config():
                 "auto_entry_time":     s.get("auto_entry_time", "10:00"),
                 "auto_entry_qty":      s.get("auto_entry_qty", 65),
                 "auto_entry_product":  s.get("auto_entry_product", "MIS"),
+                # Persisted runtime flags — fix the restart-loses-state bug.
+                # `running` lets the startup code resume monitor threads.
+                # `auto_entry_last_fired` keeps the scheduler from firing
+                # twice on the same day across restarts.
+                "running":               bool(s.get("running")),
+                "auto_entry_last_fired": s.get("auto_entry_last_fired"),
             }
     try:
-        with open(_CONFIG_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        _atomic_json_dump(_CONFIG_FILE, data)
     except Exception as e:
         print(f"[config] Save failed: {e}")
 
+
 def _load_config() -> dict:
-    """Load strategy configs from strategies.json. Returns {} if not found."""
+    """Load strategy configs from strategies.json. Returns {} if not found
+    or unreadable (we never want a corrupt file to prevent Flask from
+    booting — losing config is recoverable, losing the process isn't)."""
     try:
         with open(_CONFIG_FILE) as f:
             return json.load(f)
@@ -150,7 +198,9 @@ def _init_strategy_slot(sid: str, name: str):
 _CONFIG_FIELDS = ("name", "type", "selected", "profit_target", "loss_limit",
                   "trail_enabled", "trail_activate_at", "trail_by",
                   "auto_entry_enabled", "auto_entry_time", "auto_entry_qty",
-                  "auto_entry_product")
+                  "auto_entry_product",
+                  # Persisted runtime flags (see _save_config notes)
+                  "auto_entry_last_fired")
 
 def _apply_saved(sid: str, sc: dict):
     s = strategies[sid]
@@ -192,6 +242,17 @@ if _saved_cfg:
             pass
         _init_strategy_slot(sid, sc.get("name", sid))
         _apply_saved(sid, sc)
+
+# Strategies that were running when the previous process exited need their
+# monitor threads restarted. We can't call _start_monitor here because it
+# isn't defined yet — collect the SIDs and resume them from a deferred
+# thread spawned at the end of this module.
+_pending_resume_sids: list[str] = []
+if _saved_cfg:
+    for _sid, _sc in _saved_cfg.items():
+        if _sc.get("running"):
+            _pending_resume_sids.append(_sid)
+
 
 # ── History ───────────────────────────────────────────────────────────────────
 def _record_point(sid: str, combined: float, positions: list[dict]) -> dict:
@@ -772,6 +833,27 @@ def _start_monitor(sid: str) -> bool:
     t.start()
     return True
 
+
+def _resume_persisted_monitors():
+    """Re-launch monitor threads for strategies that were `running=true` when
+    the previous process exited. Sleeps briefly to let Kite + WebSocket settle.
+
+    Run in a daemon thread spawned at module-bottom (after every function
+    referenced here is defined). This fixes 'open positions go unwatched
+    after Flask restart' — the bug that bit us when systemd restarted
+    kite-monitor mid-day."""
+    time.sleep(3)
+    for sid in list(_pending_resume_sids):
+        try:
+            if _start_monitor(sid):
+                _log(sid, "Monitor resumed after restart (persisted state)")
+                print(f"[startup] Resumed monitor for {sid}")
+            else:
+                print(f"[startup] Could not resume {sid} (no instruments? already running?)")
+        except Exception as e:
+            print(f"[startup] Resume failed for {sid}: {e}")
+    _pending_resume_sids.clear()
+
 def _do_auto_entry(sid: str) -> dict:
     """Fire the strangle entry, then start monitoring."""
     with _lock:
@@ -936,6 +1018,7 @@ def _auto_entry_scheduler():
         time.sleep(20)
 
 threading.Thread(target=_auto_entry_scheduler, daemon=True).start()
+threading.Thread(target=_resume_persisted_monitors, daemon=True).start()
 
 
 # ── Pre-trade health check (9:00 AM IST + on-demand) ──────────────────────────
@@ -4002,6 +4085,7 @@ _straddle_config = {
     "entry_to":           "15:00",
     "squareoff_at":       "15:15",
 }
+_load_module_config_into("straddle", _straddle_config)
 
 _straddle_state: dict = {
     "session_date":     None,
@@ -4589,18 +4673,21 @@ def straddle_config_route():
         _straddle_config["paper_mode"] = bool(d["paper_mode"])
     if "active" in d:
         _straddle_config["active"] = bool(d["active"])
+    _save_module_config("straddle", _straddle_config)
     broadcast("straddle_update")
     return jsonify({"ok": True, "config": dict(_straddle_config)})
 
 @app.route("/straddle/start", methods=["POST"])
 def straddle_start_route():
     _straddle_config["active"] = True
+    _save_module_config("straddle", _straddle_config)
     threading.Thread(target=_straddle_setup_today, daemon=True).start()
     return jsonify({"ok": True})
 
 @app.route("/straddle/stop", methods=["POST"])
 def straddle_stop_route():
     _straddle_config["active"] = False
+    _save_module_config("straddle", _straddle_config)
     return jsonify({"ok": True})
 
 @app.route("/straddle/exit-now", methods=["POST"])
@@ -4654,6 +4741,7 @@ _owl_config = {
     "lots":         1,                  # number of NIFTY lots per leg
     "otm_pct":      1.5,                # ±1.5% from open price
 }
+_load_module_config_into("owl", _owl_config)
 
 _owl_state: dict = {
     "session_date":  None,              # YYYY-MM-DD of today's setup (if any)
@@ -5225,7 +5313,7 @@ def owl_config_route():
         _owl_config["paper_mode"] = bool(d["paper_mode"])
     if "active" in d:
         _owl_config["active"] = bool(d["active"])
-    _owl_save_config()
+    _save_module_config("owl", _owl_config)
     broadcast("owl_update")
     return jsonify({"ok": True, "config": dict(_owl_config)})
 
@@ -5328,6 +5416,7 @@ _calspread_config = {
     "active":                  {u: False for u in _CALSPREAD_UNDERLYINGS},   # per-underlying master switch
     "paper_mode":              {u: False for u in _CALSPREAD_UNDERLYINGS},   # Phase A doesn't place orders anyway
 }
+_load_module_config_into("calspread", _calspread_config)
 
 # Per-underlying live state (built on each trading-day setup).
 _calspread_state: dict = {u: {
@@ -5666,6 +5755,7 @@ def calspread_config_route():
         for u, v in d["active"].items():
             if u in _CALSPREAD_UNDERLYINGS:
                 _calspread_config["active"][u] = bool(v)
+    _save_module_config("calspread", _calspread_config)
     return jsonify({"ok": True, "config": dict(_calspread_config)})
 
 
@@ -5705,9 +5795,11 @@ _interarb_config = {
     "min_net_pct":     0.05,    # filter the UI table to rows where net_pct >= this
     "max_qty_per_row": 5000,    # safety cap on guaranteed-fill qty per opportunity
     "paper_mode":      True,    # Phase A: no effect (no orders). Phase B will respect this.
-    "active":          True,    # master switch: scanner pauses when False. (Phase B will
-                                # also gate order execution on this flag.)
+    "active":          False,   # master switch: scanner pauses when False. Default OFF so
+                                # restarts don't auto-arm; user opts in from the UI. (Phase B
+                                # will also gate order execution on this flag.)
 }
+_load_module_config_into("interarb", _interarb_config)
 
 # Live top-of-book depth populated by the KiteTicker thread. Keyed by
 # instrument_token (int). Each entry: bid, bid_qty, ask, ask_qty, ltp, ts.
@@ -6041,6 +6133,7 @@ def interarb_config_route():
             except Exception: pass
     if "paper_mode" in d: _interarb_config["paper_mode"] = bool(d["paper_mode"])
     if "active" in d:     _interarb_config["active"]     = bool(d["active"])
+    _save_module_config("interarb", _interarb_config)
     return jsonify({"ok": True, "config": dict(_interarb_config)})
 
 
@@ -6063,8 +6156,10 @@ _commarb_config = {
     "min_net_pct":          0.05,    # filter
     "max_lots_big":         5,       # safety cap on big-side lots per opportunity
     "paper_mode":           True,
-    "active":               True,    # master switch: scanner pauses when False.
+    "active":               False,   # master switch: scanner pauses when False. Default OFF so
+                                     # restarts don't auto-arm; user opts in from the UI.
 }
+_load_module_config_into("commarb", _commarb_config)
 
 _commarb_pairs:  list = []           # list of pair dicts (from JSON, enriched at boot)
 _commarb_opps:   list = []
@@ -6370,6 +6465,7 @@ def commarb_config_route():
         except Exception: pass
     if "paper_mode" in d: _commarb_config["paper_mode"] = bool(d["paper_mode"])
     if "active" in d:     _commarb_config["active"]     = bool(d["active"])
+    _save_module_config("commarb", _commarb_config)
     return jsonify({"ok": True, "config": dict(_commarb_config)})
 
 

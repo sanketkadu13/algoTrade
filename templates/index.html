@@ -94,6 +94,30 @@
     }
     .btn-new-tab:hover { color: var(--blue); border-color: var(--blue); }
 
+    /* ── Active-state banner: lives ABOVE the topbar on every view. Sole job is
+       to make sure nothing hidden ever places real orders without you knowing. */
+    .active-banner {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 14px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-family: var(--mono); font-size: 12px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: background .12s, border-color .12s;
+    }
+    .active-banner.idle    { background: rgba(46,160,67,.08); border: 1px solid var(--green); color: var(--green-hi); }
+    .active-banner.armed   { background: rgba(227,179,65,.10); border: 1px solid var(--orange); color: var(--orange); }
+    .active-banner.danger  { background: rgba(248,81,73,.10); border: 1px solid var(--red); color: var(--red-hi); }
+    .active-banner:hover   { filter: brightness(1.15); }
+    .active-banner-left    { display: flex; align-items: center; gap: 10px; }
+    .active-banner-dot     { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+    .active-banner.idle   .active-banner-dot { animation: blink 1.8s ease-in-out infinite; }
+    .active-banner.armed  .active-banner-dot { animation: blink 1.2s ease-in-out infinite; }
+    .active-banner.danger .active-banner-dot { animation: blink .7s  ease-in-out infinite; }
+    .active-banner-detail  { color: var(--muted); font-size: 11px; }
+    .active-banner-right   { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; opacity: .85; }
+
     /* ── Topbar ── */
     .topbar {
       display: flex; align-items: center; justify-content: space-between;
@@ -685,6 +709,7 @@
       <button id="vt-interarb"   class="vt-btn"           onclick="switchView('interarb')">🔁 NSE↔BSE</button>
       <button id="vt-commarb"    class="vt-btn"           onclick="switchView('commarb')">⛽ Comm Lot</button>
       <button id="vt-owl"        class="vt-btn"           onclick="switchView('owl')">🦉 Owl</button>
+      <button id="vt-active"     class="vt-btn"           onclick="switchView('active')">🟢 Active</button>
       <button id="vt-alerts"     class="vt-btn"           onclick="switchView('alerts')">📱 Alerts</button>
       <button id="vt-admin"      class="vt-btn"           onclick="switchView('admin')" style="display:none">👥 Admin</button>
     </div>
@@ -809,6 +834,18 @@
   </div>
 
   <main class="main">
+
+  <!-- Active-state banner — present on EVERY view. Single source of truth
+       so hidden strategies/scanners can never place real orders without
+       being visible here. Click to open the Active tab for full detail. -->
+  <div id="active-banner" class="active-banner idle" onclick="switchView('active')" title="Click for full Active tab">
+    <div class="active-banner-left">
+      <span class="active-banner-dot"></span>
+      <span id="active-banner-headline">Checking active state…</span>
+      <span id="active-banner-detail" class="active-banner-detail"></span>
+    </div>
+    <div class="active-banner-right">Active ⌄</div>
+  </div>
 
   <div id="view-strategies">
 
@@ -1500,6 +1537,56 @@
 
   </div>
 
+  <!-- ═══════════════════════════════ ACTIVE VIEW ═══════════════════════════════ -->
+  <!-- One unified view of everything that's armed / running / scanning across
+       all modules. Sole purpose: no hidden state. -->
+  <div id="view-active" style="display:none">
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>🟢 Active State <span id="active-tab-summary" style="font-weight:normal;color:var(--muted);font-size:11px;margin-left:8px"></span></span>
+        <button class="btn-save" onclick="loadActive()" style="border-color:var(--blue);color:var(--blue);width:auto;padding:5px 11px">↻ Refresh</button>
+      </div>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.5">
+        Lists every strategy (custom + scheduled) and every module (Owl, Straddle, Calspread, Interarb, Commarb, Auctions). <strong>If something can place an order, it must appear here.</strong> Polls every 5 seconds while the tab is open.
+      </div>
+      <div style="overflow-x:auto">
+        <table id="active-table" style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px">
+          <thead>
+            <tr style="color:var(--muted);border-bottom:1px solid var(--border-dim)">
+              <th style="text-align:left;padding:8px">Kind</th>
+              <th style="text-align:left;padding:8px">Name</th>
+              <th style="text-align:left;padding:8px">State</th>
+              <th style="text-align:left;padding:8px">Mode</th>
+              <th style="text-align:left;padding:8px">Detail</th>
+              <th style="text-align:right;padding:8px">MTM</th>
+            </tr>
+          </thead>
+          <tbody id="active-tbody">
+            <tr><td colspan="6" style="padding:14px;color:var(--dim);text-align:center">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:0;background:rgba(46,160,67,.04);border-color:var(--border-dim)">
+      <div class="panel-title">📖 How to read this</div>
+      <div style="font-size:12px;line-height:1.6;color:var(--muted)">
+        <strong style="color:var(--text)">State column</strong> tells you whether the item could place orders right now:
+        <ul style="margin:6px 0 10px 18px;padding:0">
+          <li><strong style="color:var(--green-hi)">monitoring / armed</strong> — actively watching, will place orders on trigger</li>
+          <li><strong style="color:var(--orange)">auto-entry @ HH:MM</strong> — scheduled to fire at a fixed time today (or tomorrow)</li>
+          <li><strong style="color:var(--blue)">scanning</strong> — looking for opportunities (Interarb / Commarb / Calspread)</li>
+          <li><strong style="color:var(--dim)">idle</strong> — not doing anything; safe</li>
+        </ul>
+        <strong style="color:var(--text)">Mode column</strong>: <code>real</code> = orders go to Kite; <code>paper</code> = simulated only.<br><br>
+        <strong style="color:var(--text)">Banner color</strong> on every page:
+        <span style="color:var(--green-hi)">●</span> green = nothing active (idle);
+        <span style="color:var(--orange)">●</span> amber = something armed/scanning (paper or scheduled);
+        <span style="color:var(--red-hi)">●</span> red = something can place REAL orders right now without further input.
+      </div>
+    </div>
+  </div>
+
   <!-- ═══════════════════════════════ OWL VIEW ══════════════════════════════════ -->
   <!-- Owl Method: 1.5%-OTM monthly NIFTY strangle, intraday, per-leg SL -->
   <div id="view-owl" style="display:none">
@@ -2096,6 +2183,7 @@
     document.getElementById('view-interarb').style.display    = (v === 'interarb')   ? '' : 'none';
     document.getElementById('view-commarb').style.display     = (v === 'commarb')    ? '' : 'none';
     document.getElementById('view-owl').style.display         = (v === 'owl')        ? '' : 'none';
+    document.getElementById('view-active').style.display      = (v === 'active')     ? '' : 'none';
     document.getElementById('view-alerts').style.display      = (v === 'alerts')     ? '' : 'none';
     document.getElementById('view-admin').style.display       = (v === 'admin')      ? '' : 'none';
     document.getElementById('vt-strategies').classList.toggle('vt-active', v === 'strategies');
@@ -2106,6 +2194,7 @@
     document.getElementById('vt-interarb').classList.toggle('vt-active', v === 'interarb');
     document.getElementById('vt-commarb').classList.toggle('vt-active', v === 'commarb');
     document.getElementById('vt-owl').classList.toggle('vt-active', v === 'owl');
+    document.getElementById('vt-active').classList.toggle('vt-active', v === 'active');
     document.getElementById('vt-alerts').classList.toggle('vt-active', v === 'alerts');
     document.getElementById('vt-admin').classList.toggle('vt-active', v === 'admin');
     // Re-render tabs with new filter
@@ -2142,6 +2231,9 @@
     }
     if (v === 'owl') {
       loadOwl();
+    }
+    if (v === 'active') {
+      loadActive();
     }
   }
 
@@ -2686,6 +2778,129 @@
   setInterval(() => {
     if (currentView === 'admin') loadAdmin();
   }, 5000);
+
+  // ── Active state (banner on every page + dedicated tab) ──────────────────
+  // Single source of truth for "what could place orders right now?". The
+  // banner refreshes every 10s on every view; the Active tab refreshes
+  // every 5s while open.
+  function _activeBannerClass(summary) {
+    if ((summary.real_money || 0) > 0) return 'danger';
+    if ((summary.armed || 0) + (summary.scanners || 0) + (summary.has_position || 0) > 0) return 'armed';
+    return 'idle';
+  }
+  function _activeBannerHeadline(summary) {
+    const parts = [];
+    if (summary.running)       parts.push(`${summary.running} monitoring`);
+    if (summary.armed)         parts.push(`${summary.armed} armed`);
+    if (summary.scanners)      parts.push(`${summary.scanners} scanning`);
+    if (summary.has_position)  parts.push(`${summary.has_position} with open pos`);
+    if (!parts.length)         return '✓ All systems idle — no strategies or scanners active';
+    const real = summary.real_money ? ` · ${summary.real_money} can place REAL orders` : '';
+    return parts.join(' · ') + real;
+  }
+  async function _refreshActiveBanner() {
+    try {
+      const r = await fetch('/active');
+      if (!r.ok) return;
+      const d = await r.json();
+      const b = document.getElementById('active-banner');
+      const cls = _activeBannerClass(d.summary || {});
+      b.className = `active-banner ${cls}`;
+      document.getElementById('active-banner-headline').textContent = _activeBannerHeadline(d.summary || {});
+      // Detail: short hint about what to click
+      const detail = (d.summary?.real_money > 0) ? 'Click to review →' : '';
+      document.getElementById('active-banner-detail').textContent = detail;
+      return d;
+    } catch (e) {
+      console.error('active-banner', e);
+    }
+  }
+
+  function _renderActiveRow(item) {
+    // Returns an <tr> HTML string for one item.
+    const kindBadge = item.kind === 'strategy'
+      ? `<span style="color:var(--blue);font-size:10px;text-transform:uppercase;letter-spacing:.1em">Strategy</span>`
+      : `<span style="color:var(--orange);font-size:10px;text-transform:uppercase;letter-spacing:.1em">Module</span>`;
+    let stateCell, modeCell, detailCell, mtmCell;
+    if (item.kind === 'strategy') {
+      if (item.running) {
+        stateCell = `<span style="color:var(--green-hi)">● monitoring</span>`;
+      } else if (item.auto_entry) {
+        stateCell = `<span style="color:var(--orange)">⏰ auto-entry @ ${item.auto_entry_time}</span>`;
+      } else {
+        stateCell = `<span style="color:var(--dim)">○ idle</span>`;
+      }
+      modeCell   = `<span style="color:var(--red-hi)">real</span>`;
+      detailCell = (item.symbols && item.symbols.length)
+        ? item.symbols.map(s => `<code style="color:var(--muted)">${s}</code>`).join(' + ')
+        : `<span style="color:var(--dim)">no instruments</span>`;
+      if (item.profit_target || item.loss_limit) {
+        detailCell += `<br><span style="color:var(--dim);font-size:10px">target ₹${item.profit_target ?? '—'} · SL ₹${item.loss_limit ?? '—'}</span>`;
+      }
+      const v = (item.mtm ?? 0);
+      const col = v > 0 ? 'var(--green-hi)' : (v < 0 ? 'var(--red-hi)' : 'var(--muted)');
+      mtmCell = item.running ? `<span style="color:${col}">₹${v.toFixed(2)}</span>` : `<span style="color:var(--dim)">—</span>`;
+    } else {
+      // module
+      if (item.active && item.has_position) {
+        stateCell = `<span style="color:var(--green-hi)">● in position</span>`;
+      } else if (item.active && (item.id === 'interarb' || item.id === 'commarb' || item.id.startsWith('calspread'))) {
+        stateCell = `<span style="color:var(--blue)">⌕ scanning</span>`;
+      } else if (item.active) {
+        stateCell = `<span style="color:var(--orange)">● armed</span>`;
+      } else if (item.scheduled) {
+        stateCell = `<span style="color:var(--orange)">⏰ ${item.scheduled} scheduled</span>`;
+      } else {
+        stateCell = `<span style="color:var(--dim)">○ idle</span>`;
+      }
+      modeCell = item.paper_mode
+        ? `<span style="color:var(--orange)">paper</span>`
+        : `<span style="color:var(--red-hi)">real</span>`;
+      const bits = [];
+      if (item.lifecycle && item.lifecycle !== 'idle') bits.push(`lifecycle: ${item.lifecycle}`);
+      detailCell = bits.join(' · ') || '<span style="color:var(--dim)">—</span>';
+      mtmCell = '<span style="color:var(--dim)">—</span>';
+    }
+    const rowBg = item.concerning ? 'background: rgba(248,81,73,.04)' : '';
+    return `<tr style="border-bottom:1px solid var(--border-dim); ${rowBg}">
+      <td style="padding:8px">${kindBadge}</td>
+      <td style="padding:8px"><strong>${item.name}</strong>${item.id ? ` <span style="color:var(--dim);font-size:10px">${item.id}</span>` : ''}</td>
+      <td style="padding:8px">${stateCell}</td>
+      <td style="padding:8px">${modeCell}</td>
+      <td style="padding:8px;color:var(--muted)">${detailCell}</td>
+      <td style="padding:8px;text-align:right">${mtmCell}</td>
+    </tr>`;
+  }
+
+  async function loadActive() {
+    try {
+      const d = await _refreshActiveBanner();   // banner + fetch in one
+      if (!d) return;
+      const s = d.summary || {};
+      document.getElementById('active-tab-summary').textContent =
+        `— ${s.total_items || 0} tracked · ${s.real_money || 0} real-money capable · ${s.running || 0} monitoring`;
+      const items = d.items || [];
+      // Sort: concerning first (red), then armed-but-paper, then idle
+      items.sort((a, b) => {
+        if (a.concerning !== b.concerning) return b.concerning - a.concerning;
+        if (a.active     !== b.active)     return (b.active?1:0) - (a.active?1:0);
+        return (a.name || '').localeCompare(b.name || '');
+      });
+      const tbody = document.getElementById('active-tbody');
+      tbody.innerHTML = items.length
+        ? items.map(_renderActiveRow).join('')
+        : `<tr><td colspan="6" style="padding:14px;color:var(--dim);text-align:center">Nothing tracked yet.</td></tr>`;
+    } catch (e) {
+      console.error('loadActive', e);
+    }
+  }
+
+  // Banner refresh: every 10s on every view (cheap; one /active call)
+  setInterval(_refreshActiveBanner, 10000);
+  // Active tab refresh: every 5s while the tab is the one being viewed
+  setInterval(() => { if (currentView === 'active') loadActive(); }, 5000);
+  // Initial banner render at boot
+  _refreshActiveBanner();
 
   // ── Owl Method ─────────────────────────────────────────────────────────────
   let _owlPollTimer = null;

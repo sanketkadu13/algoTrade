@@ -1669,6 +1669,145 @@ def logout_route():
     return resp
 
 
+@app.route("/active", methods=["GET"])
+def active_route():
+    """Unified view of everything that's armed / running / scanning across all
+    modules. Single source of truth for the dashboard's top-of-page banner and
+    the 'Active' tab. Designed to eliminate the s5/s6 surprise: every code
+    path that can place orders MUST show up here.
+
+    Response shape:
+      {ok, summary: {armed, running, scanners, has_position, real_money},
+       items: [ ... ]}
+
+    Where `real_money` is the count of items that could place a real (non-paper)
+    order without further user action — the headline number the banner uses.
+    """
+    items: list = []
+    armed = running = scanners = has_position = real_money = 0
+
+    # ─ Strategies (custom + scheduled) ─
+    with _lock:
+        for sid, s in strategies.items():
+            sym_list = [i.get("tradingsymbol") for i in s.get("selected", [])]
+            r       = bool(s.get("running"))
+            ae      = bool(s.get("auto_entry_enabled"))
+            ae_time = s.get("auto_entry_time", "")
+            ae_last = s.get("auto_entry_last_fired")
+            mtm     = s.get("mtm")
+            # Concerning if it's actually doing something OR primed to do
+            # something. Strategies always place REAL orders (no paper switch).
+            concerning = r or ae
+            if concerning:
+                real_money += 1
+            if ae: armed += 1
+            if r:  running += 1
+            items.append({
+                "kind":              "strategy",
+                "id":                sid,
+                "name":              s.get("name", ""),
+                "type":              s.get("type", "custom"),
+                "running":           r,
+                "status":            s.get("status", "idle"),
+                "auto_entry":        ae,
+                "auto_entry_time":   ae_time,
+                "auto_entry_last_fired": ae_last,
+                "symbols":           sym_list,
+                "mtm":               mtm,
+                "profit_target":     s.get("profit_target"),
+                "loss_limit":        s.get("loss_limit"),
+                "paper_mode":        False,   # strategies always real
+                "concerning":        concerning,
+            })
+
+    # ─ Module helper: pulls (active, paper, lifecycle, has_position) safely ─
+    def _mod(id_: str, name: str, cfg: dict, state: dict | None = None,
+             has_pos_keys: tuple = ("position",), extra: dict | None = None):
+        nonlocal armed, scanners, has_position, real_money
+        active = bool(cfg.get("active"))
+        paper  = bool(cfg.get("paper_mode", True))
+        life   = (state or {}).get("lifecycle") if state else None
+        has_pos = False
+        if state:
+            for k in has_pos_keys:
+                v = state.get(k)
+                if v: has_pos = True; break
+        concerning = active or has_pos
+        if active and not paper: real_money += 1
+        if active and id_ in ("interarb", "commarb"): scanners += 1
+        if active and id_ in ("owl", "straddle"):     armed += 1
+        if has_pos: has_position += 1
+        item = {
+            "kind":       "module",
+            "id":         id_,
+            "name":       name,
+            "active":     active,
+            "paper_mode": paper,
+            "lifecycle":  life,
+            "has_position": has_pos,
+            "concerning": concerning,
+        }
+        if extra: item.update(extra)
+        items.append(item)
+
+    _mod("owl",      "Owl Method",
+         _owl_config, _owl_state)
+    _mod("straddle", "Short Straddle",
+         _straddle_config, _straddle_state)
+    # Calspread has per-underlying active flags — flatten
+    cs_cfg_active = _calspread_config.get("active", {}) or {}
+    cs_cfg_paper  = _calspread_config.get("paper_mode", {}) or {}
+    for u in ("NIFTY", "BANKNIFTY"):
+        u_active = bool(cs_cfg_active.get(u))
+        u_paper  = bool(cs_cfg_paper.get(u, True))
+        u_state  = (_calspread_state.get(u) or {}) if isinstance(_calspread_state, dict) else {}
+        u_has_pos = bool(u_state.get("position"))
+        if u_active and u_has_pos: has_position += 1
+        if u_active and not u_paper: real_money += 1
+        if u_active: scanners += 1
+        items.append({
+            "kind":         "module",
+            "id":           f"calspread:{u}",
+            "name":         f"Calendar Spread ({u})",
+            "active":       u_active,
+            "paper_mode":   u_paper,
+            "lifecycle":    u_state.get("lifecycle"),
+            "has_position": u_has_pos,
+            "concerning":   u_active or u_has_pos,
+        })
+    _mod("interarb", "NSE↔BSE Inter-Exchange Arb",
+         _interarb_config, None)
+    _mod("commarb",  "Commodity Lot Arb",
+         _commarb_config, None)
+    # Auctions: an auction "armed" means there are scheduled snipes
+    auc_pending = len((_auctions_state or {}).get("pending") or {})
+    if auc_pending: armed += 1
+    items.append({
+        "kind":          "module",
+        "id":            "auctions",
+        "name":          "Auctions",
+        "active":        auc_pending > 0,
+        "paper_mode":    False,
+        "lifecycle":     "armed" if auc_pending else "idle",
+        "has_position":  False,
+        "scheduled":     auc_pending,
+        "concerning":    auc_pending > 0,
+    })
+
+    return jsonify({
+        "ok":      True,
+        "summary": {
+            "armed":         armed,           # strategies with auto_entry_enabled OR module armed
+            "running":       running,         # strategies currently monitoring
+            "scanners":      scanners,        # interarb/commarb/calspread active
+            "has_position":  has_position,    # modules holding open positions
+            "real_money":    real_money,      # would place REAL orders if triggered now
+            "total_items":   len(items),
+        },
+        "items":   items,
+    })
+
+
 @app.route("/stream")
 def stream():
     q: queue.Queue = queue.Queue(maxsize=30)

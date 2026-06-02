@@ -711,7 +711,6 @@
       <button id="vt-owl"        class="vt-btn"           onclick="switchView('owl')">🦉 Owl</button>
       <button id="vt-active"     class="vt-btn"           onclick="switchView('active')">🟢 Active</button>
       <button id="vt-alerts"     class="vt-btn"           onclick="switchView('alerts')">📱 Alerts</button>
-      <button id="vt-admin"      class="vt-btn"           onclick="switchView('admin')" style="display:none">👥 Admin</button>
     </div>
 
     <div class="tab-strip" id="tab-strip"></div>
@@ -1799,54 +1798,6 @@
 
   </div>
 
-  <!-- ═══════════════════════════════ ADMIN VIEW ════════════════════════════════ -->
-  <!-- Only ever shown when /admin/state returns 200 (i.e., this instance has ADMIN_ENABLED=true) -->
-  <div id="view-admin" style="display:none">
-
-    <div class="panel" style="margin-top:0">
-      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
-        <span>Active Users <span id="adm-user-count" style="color:var(--muted);font-weight:normal">— 0</span></span>
-        <button class="btn-save" onclick="loadAdmin()" style="border-color:var(--blue);color:var(--blue);width:auto;padding:5px 11px">↻ Refresh</button>
-      </div>
-      <div id="adm-users" style="font-family:var(--mono);font-size:12px;color:var(--dim);line-height:1.8;margin-top:8px">Loading…</div>
-    </div>
-
-    <div class="panel" style="margin-top:0">
-      <div class="panel-title">Invite a new user</div>
-      <div style="display:grid;grid-template-columns:1fr 140px 140px;gap:10px;align-items:end">
-        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12px">
-          Slug hint (optional, lowercase)
-          <input type="text" id="adm-slug-hint" placeholder="e.g. priya">
-        </label>
-        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12px">
-          Link valid for
-          <select id="adm-ttl" style="background:var(--bg);border:1px solid var(--border-dim);border-radius:4px;padding:8px 10px;color:var(--text);font-family:var(--mono)">
-            <option value="1">1 hour</option>
-            <option value="24" selected>24 hours</option>
-            <option value="72">3 days</option>
-          </select>
-        </label>
-        <button class="btn-save" onclick="adminInvite()" style="border-color:var(--green);color:var(--green-hi)">Generate Link</button>
-      </div>
-      <div id="adm-invite-result" style="margin-top:14px"></div>
-    </div>
-
-    <div class="panel" style="margin-top:0">
-      <div class="panel-title">Outstanding Invites</div>
-      <div id="adm-invites" style="font-family:var(--mono);font-size:12px;color:var(--dim);line-height:1.8">No outstanding invites.</div>
-    </div>
-
-    <div class="panel" style="margin-top:0;background:rgba(248,81,73,.05);border-color:var(--red)">
-      <div class="panel-title" style="color:var(--red-hi)">⚠ Security note</div>
-      <div style="font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.6">
-        Onboarding submits Kite API secrets to this dashboard over <strong>plain HTTP</strong>. Only send invite links to people on a trusted network, or finish setting up HTTPS first (see deploy/MULTI_USER.md).
-        <br><br>
-        Invite links are <strong>one-time</strong>. Anyone with the link can create a new dashboard instance until it's used or expires. Don't forward links you've already used.
-      </div>
-    </div>
-
-  </div>
-
   </main>
 </div>
 
@@ -2185,7 +2136,6 @@
     document.getElementById('view-owl').style.display         = (v === 'owl')        ? '' : 'none';
     document.getElementById('view-active').style.display      = (v === 'active')     ? '' : 'none';
     document.getElementById('view-alerts').style.display      = (v === 'alerts')     ? '' : 'none';
-    document.getElementById('view-admin').style.display       = (v === 'admin')      ? '' : 'none';
     document.getElementById('vt-strategies').classList.toggle('vt-active', v === 'strategies');
     document.getElementById('vt-scheduled').classList.toggle('vt-active', v === 'scheduled');
     document.getElementById('vt-arb').classList.toggle('vt-active', v === 'arb');
@@ -2196,7 +2146,6 @@
     document.getElementById('vt-owl').classList.toggle('vt-active', v === 'owl');
     document.getElementById('vt-active').classList.toggle('vt-active', v === 'active');
     document.getElementById('vt-alerts').classList.toggle('vt-active', v === 'alerts');
-    document.getElementById('vt-admin').classList.toggle('vt-active', v === 'admin');
     // Re-render tabs with new filter
     if (lastData?.strategies) renderTabs(lastData.strategies, lastData.strategy_order || []);
     if (v === 'arb') {
@@ -2222,9 +2171,6 @@
     }
     if (v === 'commarb') {
       loadCommarb();
-    }
-    if (v === 'admin') {
-      loadAdmin();
     }
     if (v === 'alerts') {
       loadTelegramConfig();
@@ -2592,192 +2538,6 @@
   setInterval(() => {
     if (currentView === 'straddle') loadStraddle();
   }, 2000);
-
-  // Clipboard helper — works on plain HTTP (where navigator.clipboard is
-  // blocked) via a hidden textarea + execCommand fallback.
-  function copyToClipboard(text, btnEl, doneLabel, restoreLabel) {
-    const done = () => {
-      if (btnEl) {
-        btnEl.textContent = doneLabel || 'Copied ✓';
-        setTimeout(() => { btnEl.textContent = restoreLabel || 'Copy'; }, 1500);
-      }
-    };
-    const fail = (e) => {
-      console.error('copy failed', e);
-      if (btnEl) {
-        btnEl.textContent = '✗ Copy failed — select & ⌘C';
-        setTimeout(() => { btnEl.textContent = restoreLabel || 'Copy'; }, 2500);
-      }
-    };
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).then(done).catch(fail);
-      return;
-    }
-    // HTTP fallback
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', '');
-      ta.style.position = 'fixed';
-      ta.style.top = 0; ta.style.left = 0;
-      ta.style.opacity = 0;
-      document.body.appendChild(ta);
-      ta.focus(); ta.select();
-      const ok = document.execCommand('copy');
-      document.body.removeChild(ta);
-      if (ok) done(); else fail('execCommand returned false');
-    } catch (e) { fail(e); }
-  }
-
-  // ── Admin / onboarding ────────────────────────────────────────────────────
-  // Probe /admin/state once on boot — if the instance has ADMIN_ENABLED, show
-  // the sidebar tab; otherwise the button stays hidden forever.
-  (async function adminProbe() {
-    try {
-      const r = await fetch('/admin/state');
-      if (r.ok) {
-        document.getElementById('vt-admin').style.display = '';
-      }
-    } catch (e) {}
-  })();
-
-  async function loadAdmin() {
-    try {
-      const r = await fetch('/admin/state');
-      if (!r.ok) { return; }
-      const d = await r.json();
-      renderAdmin(d);
-    } catch (e) {}
-  }
-
-  function renderAdmin(d) {
-    const users = d.users || [];
-    document.getElementById('adm-user-count').textContent = `— ${users.length} / ${d.max_users}`;
-    const usersEl = document.getElementById('adm-users');
-    if (!users.length) {
-      usersEl.innerHTML = '<span style="color:var(--dim)">No additional users yet. Use "Generate Link" below to invite the first one.</span>';
-    } else {
-      usersEl.innerHTML = users.map(u => {
-        const url = u.public_port ? `${window.location.protocol}//${window.location.hostname}:${u.public_port}/` : '<span style="color:var(--dim)">no nginx?</span>';
-        const status = u.is_running
-          ? '<span style="color:var(--green-hi)">● running</span>'
-          : '<span style="color:var(--red-hi)">● stopped</span>';
-        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border-dim)">
-          <div>
-            <strong>${u.slug}</strong> &nbsp; ${status}
-            <div style="font-size:10px;color:var(--dim);margin-top:2px">${typeof url === 'string' ? '<a href="' + url + '" target="_blank" style="color:var(--blue);text-decoration:none">' + url + '</a>' : url} &nbsp;·&nbsp; flask :${u.flask_port}</div>
-          </div>
-          <div style="display:flex;gap:6px">
-            <button class="btn-save" onclick="adminResetPassword('${u.slug}')" style="border-color:var(--orange);color:var(--orange);width:auto;padding:4px 10px;font-size:11px">Reset PW</button>
-            <button class="btn-save" onclick="adminRemoveUser('${u.slug}')" style="border-color:var(--red);color:var(--red);width:auto;padding:4px 10px;font-size:11px">Remove</button>
-          </div>
-        </div>`;
-      }).join('');
-    }
-
-    // Outstanding invites
-    const invites = d.invites || [];
-    const invEl = document.getElementById('adm-invites');
-    if (!invites.length) {
-      invEl.innerHTML = '<span style="color:var(--dim)">No outstanding invites.</span>';
-    } else {
-      invEl.innerHTML = invites.map(i => {
-        const url = `${window.location.protocol}//${window.location.host}/onboard?token=${i.token}`;
-        return `<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--border-dim);gap:10px">
-          <div style="min-width:0;flex:1">
-            ${i.slug_hint ? '<strong>' + i.slug_hint + '</strong> &nbsp;·&nbsp; ' : ''}expires ${i.expires_at.slice(0,16).replace('T',' ')}
-            <div style="font-size:10px;color:var(--dim);margin-top:4px;word-break:break-all"><a href="${url}" target="_blank" style="color:var(--blue);text-decoration:none">${url}</a></div>
-          </div>
-          <div style="display:flex;gap:6px">
-            <button class="btn-save" onclick="copyToClipboard('${url}', this, 'Copied ✓', 'Copy')" style="border-color:var(--blue);color:var(--blue);width:auto;padding:4px 10px;font-size:11px">Copy</button>
-            <button class="btn-save" onclick="adminRevokeInvite('${i.token}')" style="border-color:var(--red);color:var(--red);width:auto;padding:4px 10px;font-size:11px">Revoke</button>
-          </div>
-        </div>`;
-      }).join('');
-    }
-  }
-
-  async function adminInvite() {
-    const slug_hint = document.getElementById('adm-slug-hint').value.trim().toLowerCase();
-    const ttl_hours = parseInt(document.getElementById('adm-ttl').value) || 24;
-    const r = await fetch('/admin/invite', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug_hint, ttl_hours }),
-    });
-    const d = await r.json();
-    const out = document.getElementById('adm-invite-result');
-    if (!d.ok) {
-      out.innerHTML = `<div style="background:rgba(248,81,73,.08);border:1px solid var(--red);border-radius:6px;padding:10px;font-family:var(--mono);font-size:12px;color:var(--red-hi)">⚠ ${d.error}</div>`;
-      return;
-    }
-    out.innerHTML = `
-      <div style="background:rgba(46,160,67,.08);border:1px solid var(--green);border-radius:6px;padding:12px;font-family:var(--mono);font-size:12px;color:var(--text);line-height:1.6">
-        <strong style="color:var(--green-hi)">✓ Link ready</strong>
-        <div style="margin-top:8px;word-break:break-all"><a href="${d.url}" target="_blank" style="color:var(--blue);text-decoration:none">${d.url}</a></div>
-        <div style="margin-top:8px;display:flex;gap:8px">
-          <button class="btn-save" onclick="copyToClipboard('${d.url}', this, 'Copied ✓', 'Copy link')" style="border-color:var(--blue);color:var(--blue);width:auto;padding:4px 12px">Copy link</button>
-        </div>
-        <div style="margin-top:8px;font-size:10px;color:var(--dim)">Expires ${d.expires_at.slice(0,16).replace('T',' ')}. Send this to the person you're onboarding — one-time use.</div>
-      </div>`;
-    document.getElementById('adm-slug-hint').value = '';
-    loadAdmin();
-  }
-
-  async function adminRevokeInvite(token) {
-    if (!confirm('Revoke this invite link? It will stop working immediately.')) return;
-    await fetch('/admin/invite/' + encodeURIComponent(token), { method: 'DELETE' });
-    loadAdmin();
-  }
-
-  async function adminResetPassword(slug) {
-    const newPw = prompt(
-      `Reset basic-auth password for "${slug}"?\n\n` +
-      `Enter a new password (at least 6 characters).\n` +
-      `Leave blank to cancel.\n\n` +
-      `The old password stops working immediately. The user will need to re-enter ` +
-      `the new one in their browser (clear saved credentials first if it doesn't prompt).`
-    );
-    if (!newPw) return;
-    if (newPw.length < 6) {
-      alert('Password must be at least 6 characters.');
-      return;
-    }
-    const r = await fetch(`/admin/users/${encodeURIComponent(slug)}/reset-password`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ dash_password: newPw }),
-    });
-    const d = await r.json();
-    if (!d.ok) {
-      alert('Reset failed: ' + (d.error || ''));
-      return;
-    }
-    // Show the new password back to the admin so they can send it to the user.
-    // Using prompt() with a default value makes it copy-friendly on HTTP
-    // (where navigator.clipboard is blocked).
-    prompt(
-      `✓ Password reset for "${slug}".\n\n` +
-      `New password (copy this and send to the user):`,
-      newPw
-    );
-  }
-
-  async function adminRemoveUser(slug) {
-    if (!confirm(`Remove user "${slug}"?\n\nTheir data will be archived to /opt/kite-archive-${slug}-<timestamp>.tar.gz on the VM. Their dashboard URL will stop working.\n\nIf they have positions open in Kite, those are NOT affected — only this dashboard's monitoring stops.`)) return;
-    const r = await fetch(`/admin/users/${encodeURIComponent(slug)}/remove`, { method: 'POST' });
-    const d = await r.json();
-    if (!d.ok) {
-      alert('Removal failed: ' + (d.error || ''));
-      return;
-    }
-    loadAdmin();
-  }
-
-  // Poll while view is open
-  setInterval(() => {
-    if (currentView === 'admin') loadAdmin();
-  }, 5000);
 
   // ── Active state (banner on every page + dedicated tab) ──────────────────
   // Single source of truth for "what could place orders right now?". The

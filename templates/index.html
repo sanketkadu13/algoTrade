@@ -1558,10 +1558,11 @@
               <th style="text-align:left;padding:8px">Mode</th>
               <th style="text-align:left;padding:8px">Detail</th>
               <th style="text-align:right;padding:8px">MTM</th>
+              <th style="text-align:right;padding:8px">Action</th>
             </tr>
           </thead>
           <tbody id="active-tbody">
-            <tr><td colspan="6" style="padding:14px;color:var(--dim);text-align:center">Loading…</td></tr>
+            <tr><td colspan="7" style="padding:14px;color:var(--dim);text-align:center">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -2576,8 +2577,19 @@
     }
   }
 
+  // Returns the dashboard view name that owns a given item, or null if no
+  // dedicated view exists (e.g. calspread — Phase A is log-only).
+  function _activeViewFor(item) {
+    if (item.kind === 'strategy') {
+      return (item.type === 'scheduled') ? 'scheduled' : 'strategies';
+    }
+    // module: id is one of owl/straddle/interarb/commarb/auctions/calspread:NIFTY/calspread:BANKNIFTY
+    const id = (item.id || '').split(':')[0];
+    if (['owl','straddle','interarb','commarb','auctions'].includes(id)) return id;
+    return null;
+  }
+
   function _renderActiveRow(item) {
-    // Returns an <tr> HTML string for one item.
     const kindBadge = item.kind === 'strategy'
       ? `<span style="color:var(--blue);font-size:10px;text-transform:uppercase;letter-spacing:.1em">Strategy</span>`
       : `<span style="color:var(--orange);font-size:10px;text-transform:uppercase;letter-spacing:.1em">Module</span>`;
@@ -2601,7 +2613,6 @@
       const col = v > 0 ? 'var(--green-hi)' : (v < 0 ? 'var(--red-hi)' : 'var(--muted)');
       mtmCell = item.running ? `<span style="color:${col}">₹${v.toFixed(2)}</span>` : `<span style="color:var(--dim)">—</span>`;
     } else {
-      // module
       if (item.active && item.has_position) {
         stateCell = `<span style="color:var(--green-hi)">● in position</span>`;
       } else if (item.active && (item.id === 'interarb' || item.id === 'commarb' || item.id.startsWith('calspread'))) {
@@ -2622,14 +2633,98 @@
       mtmCell = '<span style="color:var(--dim)">—</span>';
     }
     const rowBg = item.concerning ? 'background: rgba(248,81,73,.04)' : '';
+
+    // Name cell: clickable link to the owning view (or plain text if no view).
+    const view = _activeViewFor(item);
+    const idTag = item.id ? ` <span style="color:var(--dim);font-size:10px">${item.id}</span>` : '';
+    const nameCell = view
+      ? `<a href="#" onclick="event.preventDefault();switchView('${view}')" style="color:var(--text);text-decoration:none;border-bottom:1px dotted var(--border-dim)" title="Open ${view} tab"><strong>${item.name}</strong></a>${idTag}`
+      : `<strong>${item.name}</strong>${idTag}`;
+
+    // Action cell: Disable only when something IS active/running/auto-entry.
+    // payload encoded as JSON-in-attribute so the click handler has full context.
+    const canDisable = item.concerning;
+    const payload = encodeURIComponent(JSON.stringify({
+      kind: item.kind, id: item.id, name: item.name,
+      running: !!item.running, auto_entry: !!item.auto_entry,
+      active: !!item.active,
+    }));
+    const actionCell = canDisable
+      ? `<button class="btn-save" onclick="_activeDisable('${payload}')" style="border-color:var(--red);color:var(--red);width:auto;padding:4px 10px;font-size:11px">Disable</button>`
+      : `<span style="color:var(--dim);font-size:10px">—</span>`;
+
     return `<tr style="border-bottom:1px solid var(--border-dim); ${rowBg}">
       <td style="padding:8px">${kindBadge}</td>
-      <td style="padding:8px"><strong>${item.name}</strong>${item.id ? ` <span style="color:var(--dim);font-size:10px">${item.id}</span>` : ''}</td>
+      <td style="padding:8px">${nameCell}</td>
       <td style="padding:8px">${stateCell}</td>
       <td style="padding:8px">${modeCell}</td>
       <td style="padding:8px;color:var(--muted)">${detailCell}</td>
       <td style="padding:8px;text-align:right">${mtmCell}</td>
+      <td style="padding:8px;text-align:right">${actionCell}</td>
     </tr>`;
+  }
+
+  // Disable handler: for strategies, stop monitor AND disable auto-entry;
+  // for modules, set active=false. Calspread takes a per-underlying nested
+  // body; auctions doesn't have a single 'active' switch and gets a
+  // user-friendly explanation instead of a silent no-op.
+  async function _activeDisable(encodedPayload) {
+    let item;
+    try { item = JSON.parse(decodeURIComponent(encodedPayload)); }
+    catch (e) { alert('Bad payload: ' + e.message); return; }
+
+    const label = `${item.kind === 'strategy' ? 'strategy' : 'module'} "${item.name}"`;
+    if (!confirm(
+      `Disable ${label}?\n\n` +
+      (item.kind === 'strategy'
+        ? `This stops the monitor and turns off auto-entry. Any open Kite positions are NOT closed — they remain in your account.`
+        : `This sets the module's active=false. The scanner / scheduler stops; any state already triggered (paper trades, history) is preserved.`)
+    )) return;
+
+    try {
+      if (item.kind === 'strategy') {
+        // Stop the monitor (no-op if not running) and disable auto-entry.
+        if (item.running) {
+          await fetch('/stop/' + encodeURIComponent(item.id), { method: 'POST' });
+        }
+        if (item.auto_entry) {
+          await fetch('/auto-entry/' + encodeURIComponent(item.id), {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ auto_entry_enabled: false }),
+          });
+        }
+      } else {
+        const id = item.id || '';
+        if (id.startsWith('calspread:')) {
+          const u = id.split(':')[1];
+          await fetch('/calspread/config', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ active: { [u]: false } }),
+          });
+        } else if (id === 'auctions') {
+          alert(
+            'Auctions doesn\'t have a single on/off switch.\n\n' +
+            'Open the Auctions tab and revoke any scheduled snipes individually.'
+          );
+          switchView('auctions');
+          return;
+        } else if (['owl','straddle','interarb','commarb'].includes(id)) {
+          await fetch('/' + id + '/config', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ active: false }),
+          });
+        } else {
+          alert('Unknown module id: ' + id);
+          return;
+        }
+      }
+      loadActive();
+    } catch (e) {
+      alert('Disable failed: ' + e.message);
+    }
   }
 
   async function loadActive() {
@@ -2649,7 +2744,7 @@
       const tbody = document.getElementById('active-tbody');
       tbody.innerHTML = items.length
         ? items.map(_renderActiveRow).join('')
-        : `<tr><td colspan="6" style="padding:14px;color:var(--dim);text-align:center">Nothing tracked yet.</td></tr>`;
+        : `<tr><td colspan="7" style="padding:14px;color:var(--dim);text-align:center">Nothing tracked yet.</td></tr>`;
     } catch (e) {
       console.error('loadActive', e);
     }

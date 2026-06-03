@@ -710,7 +710,7 @@
       <button id="vt-commarb"    class="vt-btn"           onclick="switchView('commarb')">⛽ Comm Lot</button>
       <button id="vt-owl"        class="vt-btn"           onclick="switchView('owl')">🦉 Owl</button>
       <button id="vt-active"     class="vt-btn"           onclick="switchView('active')">🟢 Active</button>
-      <button id="vt-alerts"     class="vt-btn"           onclick="switchView('alerts')">📱 Alerts</button>
+      <button id="vt-settings"   class="vt-btn"           onclick="switchView('settings')">⚙ Settings</button>
     </div>
 
     <div class="tab-strip" id="tab-strip"></div>
@@ -1744,13 +1744,91 @@
 
   </div>
 
-  <!-- ═══════════════════════════════ ALERTS VIEW ═══════════════════════════════ -->
-  <div id="view-alerts" style="display:none">
+  <!-- ═══════════════════════════════ SETTINGS VIEW ═════════════════════════════ -->
+  <!-- Unified settings tab: MIS pre-square safety, Kite credentials, Telegram. -->
+  <div id="view-settings" style="display:none">
 
+    <!-- ─── Section 1: MIS Pre-Square Safety ─── -->
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>🛡 MIS Pre-Square Safety <span id="mis-status-badge" style="font-weight:normal;font-size:11px;margin-left:8px"></span></span>
+        <button class="btn-save" onclick="loadSettings()" style="border-color:var(--blue);color:var(--blue);width:auto;padding:5px 11px">↻ Refresh All</button>
+      </div>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.5">
+        Kite RMS auto-squares MIS (intraday) positions at <strong>15:20 IST</strong>. If your SL/target hasn't fired by then, RMS exits at whatever the market gives — you lose price control. This safety net force-exits running MIS strategies a few minutes earlier so you pick the exit price, not Kite.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:end;max-width:520px">
+        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:11px;color:var(--muted)">
+          Force-exit time (IST)
+          <input type="time" id="mis-time" value="15:15">
+          <span style="color:var(--dim);font-size:10px">Must be strictly before 15:20 IST.</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;cursor:pointer;padding-bottom:6px">
+          <input type="checkbox" id="mis-enabled" checked>
+          <span>Enable pre-square</span>
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:14px">
+        <button class="btn-save" onclick="saveMISConfig()" style="border-color:var(--green);color:var(--green-hi);width:auto;padding:7px 16px">Save</button>
+        <span id="mis-result" style="font-family:var(--mono);font-size:11px"></span>
+      </div>
+    </div>
+
+    <!-- ─── Section 2: Kite Connect Credentials ─── -->
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title">🔑 Kite Connect Credentials</div>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.5">
+        API key/secret are one-time setup. Access token rotates daily — use the sidebar's <strong>🔑 Refresh Token</strong> button for the normal daily flow. User ID + password + TOTP secret enable headless auto-refresh (optional). Leave any field <strong>blank to keep the current value</strong>; only fields with text get updated.
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr;gap:10px;max-width:600px">
+        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12px">
+          API Key
+          <input type="text" id="kc-API_KEY" autocomplete="off" spellcheck="false">
+          <span id="kc-API_KEY-status" style="color:var(--dim);font-size:10px"></span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12px">
+          API Secret
+          <input type="password" id="kc-API_SECRET" autocomplete="off" spellcheck="false">
+          <span id="kc-API_SECRET-status" style="color:var(--dim);font-size:10px"></span>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12px">
+          Access Token <span style="color:var(--dim);font-size:10px">(daily — usually managed by 🔑 Refresh Token)</span>
+          <input type="password" id="kc-ACCESS_TOKEN" autocomplete="off" spellcheck="false">
+          <span id="kc-ACCESS_TOKEN-status" style="color:var(--dim);font-size:10px"></span>
+        </label>
+
+        <div style="border-top:1px solid var(--border-dim);margin-top:6px;padding-top:10px">
+          <div style="font-family:var(--mono);font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Headless auto-refresh (optional)</div>
+
+          <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12px;margin-bottom:10px">
+            Kite User ID
+            <input type="text" id="kc-KITE_USER_ID" autocomplete="off" spellcheck="false" placeholder="e.g. AB1234">
+            <span id="kc-KITE_USER_ID-status" style="color:var(--dim);font-size:10px"></span>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12px;margin-bottom:10px">
+            Kite Password
+            <input type="password" id="kc-KITE_PASSWORD" autocomplete="off" spellcheck="false">
+            <span id="kc-KITE_PASSWORD-status" style="color:var(--dim);font-size:10px"></span>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12px">
+            TOTP Secret <span style="color:var(--dim);font-size:10px">(base32 — from kite.zerodha.com → "External 2FA apps")</span>
+            <input type="password" id="kc-KITE_TOTP_SECRET" autocomplete="off" spellcheck="false">
+            <span id="kc-KITE_TOTP_SECRET-status" style="color:var(--dim);font-size:10px"></span>
+          </label>
+        </div>
+
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+          <button class="btn-save" onclick="saveKiteCreds()" style="border-color:var(--green);color:var(--green-hi);width:auto;padding:7px 16px">Save</button>
+          <span id="kc-result" style="font-family:var(--mono);font-size:11px"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── Section 3: Telegram Alerts ─── -->
     <div class="panel" style="margin-top:0">
       <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
         <span>📱 Telegram Alerts <span id="tg-status-badge" style="font-weight:normal;font-size:11px;margin-left:8px"></span></span>
-        <button class="btn-save" onclick="loadTelegramConfig()" style="border-color:var(--blue);color:var(--blue);width:auto;padding:5px 11px">↻ Refresh</button>
       </div>
       <div style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.5">
         Hook up a Telegram bot and the dashboard will DM you on entries, exits, trailing-SL hits, IP changes, EOD summaries, and more. You can also send commands back (<code>/status</code>, <code>/positions</code>, <code>/exit</code>, etc.) — full list in <code>/help</code> once connected.
@@ -1822,9 +1900,10 @@
     <div class="panel" style="margin-top:0;background:rgba(227,179,65,.05);border-color:var(--orange)">
       <div class="panel-title" style="color:var(--orange)">⚠ Security notes</div>
       <div style="font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.6">
-        • Your bot token is a credential — anyone with it can DM as your bot. We store it in this instance's <code>.env</code> (chmod 600) and never log it.<br>
-        • The bot only accepts commands from the chat ID you save here. Messages from any other chat are ignored.<br>
-        • If you ever leak a token, message <a href="https://t.me/BotFather" target="_blank" rel="noopener" style="color:var(--blue)">@BotFather</a> → <code>/revoke</code> to invalidate it, then save the new token here.
+        • All credentials live in this instance's <code>.env</code> (chmod 600) and never appear in logs.<br>
+        • Bot token: anyone with it can DM as your bot. <code>@BotFather</code> → <code>/revoke</code> to rotate.<br>
+        • The bot only accepts commands from the chat ID you save here.<br>
+        • Kite API secret + TOTP secret: rotate at developers.kite.trade if compromised.
       </div>
     </div>
 
@@ -2167,7 +2246,7 @@
     document.getElementById('view-commarb').style.display     = (v === 'commarb')    ? '' : 'none';
     document.getElementById('view-owl').style.display         = (v === 'owl')        ? '' : 'none';
     document.getElementById('view-active').style.display      = (v === 'active')     ? '' : 'none';
-    document.getElementById('view-alerts').style.display      = (v === 'alerts')     ? '' : 'none';
+    document.getElementById('view-settings').style.display    = (v === 'settings')   ? '' : 'none';
     document.getElementById('vt-strategies').classList.toggle('vt-active', v === 'strategies');
     document.getElementById('vt-scheduled').classList.toggle('vt-active', v === 'scheduled');
     document.getElementById('vt-arb').classList.toggle('vt-active', v === 'arb');
@@ -2177,7 +2256,7 @@
     document.getElementById('vt-commarb').classList.toggle('vt-active', v === 'commarb');
     document.getElementById('vt-owl').classList.toggle('vt-active', v === 'owl');
     document.getElementById('vt-active').classList.toggle('vt-active', v === 'active');
-    document.getElementById('vt-alerts').classList.toggle('vt-active', v === 'alerts');
+    document.getElementById('vt-settings').classList.toggle('vt-active', v === 'settings');
     // Re-render tabs with new filter
     if (lastData?.strategies) renderTabs(lastData.strategies, lastData.strategy_order || []);
     if (v === 'arb') {
@@ -2204,8 +2283,8 @@
     if (v === 'commarb') {
       loadCommarb();
     }
-    if (v === 'alerts') {
-      loadTelegramConfig();
+    if (v === 'settings') {
+      loadSettings();
     }
     if (v === 'owl') {
       loadOwl();
@@ -2992,6 +3071,109 @@
   setInterval(() => {
     if (currentView === 'owl') loadOwl();
   }, 3000);
+
+  // ── Settings: unified loader ──────────────────────────────────────────────
+  async function loadSettings() {
+    // Fan out — three independent /config endpoints.
+    loadMISConfig();
+    loadKiteCreds();
+    loadTelegramConfig();
+  }
+
+  // ── Settings: MIS pre-square ──────────────────────────────────────────────
+  async function loadMISConfig() {
+    const badge = document.getElementById('mis-status-badge');
+    try {
+      const r = await fetch('/config/mis-presquare');
+      const d = await r.json();
+      if (!d.ok) { badge.innerHTML = '<span style="color:var(--red-hi)">● load failed</span>'; return; }
+      const cfg = d.config || {};
+      const enabledEl = document.getElementById('mis-enabled');
+      const timeEl    = document.getElementById('mis-time');
+      if (enabledEl) enabledEl.checked = cfg.enabled !== false;
+      if (timeEl)    timeEl.value      = cfg.time   || '15:15';
+      badge.innerHTML = cfg.enabled !== false
+        ? `<span style="color:var(--green-hi)">● armed</span> <span style="color:var(--dim)">fires ${cfg.time || '15:15'} IST</span>`
+        : '<span style="color:var(--dim)">○ disabled</span>';
+    } catch (e) {
+      badge.innerHTML = '<span style="color:var(--red-hi)">● load failed</span>';
+    }
+  }
+
+  async function saveMISConfig() {
+    const out = document.getElementById('mis-result');
+    const enabled = document.getElementById('mis-enabled').checked;
+    const time    = document.getElementById('mis-time').value || '15:15';
+    out.innerHTML = '<span style="color:var(--dim)">Saving…</span>';
+    const r = await fetch('/config/mis-presquare', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ enabled, time }),
+    });
+    const d = await r.json();
+    if (!d.ok) { out.innerHTML = `<span style="color:var(--red-hi)">⚠ ${d.error || 'save failed'}</span>`; return; }
+    out.innerHTML = '<span style="color:var(--green-hi)">✓ Saved</span>';
+    setTimeout(() => { out.textContent = ''; }, 1500);
+    loadMISConfig();
+  }
+
+  // ── Settings: Kite credentials ────────────────────────────────────────────
+  async function loadKiteCreds() {
+    try {
+      const r = await fetch('/config/kite');
+      const d = await r.json();
+      if (!d.ok) return;
+      const creds = d.creds || {};
+      for (const k of Object.keys(creds)) {
+        const inp    = document.getElementById('kc-' + k);
+        const status = document.getElementById('kc-' + k + '-status');
+        if (inp) {
+          inp.value = '';   // always blank — user must re-paste to update
+          if (creds[k].set) {
+            if (k === 'KITE_USER_ID') {
+              inp.placeholder = 'Saved: ' + (creds[k].value || '');
+            } else {
+              inp.placeholder = 'Saved: ' + (creds[k].masked || '••••') + '  (leave blank to keep)';
+            }
+          } else {
+            inp.placeholder = 'Not set';
+          }
+        }
+        if (status) {
+          status.textContent = creds[k].set ? '✓ saved' : '○ not set';
+          status.style.color = creds[k].set ? 'var(--green-hi)' : 'var(--dim)';
+        }
+      }
+    } catch (e) {
+      console.error('loadKiteCreds', e);
+    }
+  }
+
+  async function saveKiteCreds() {
+    const out = document.getElementById('kc-result');
+    const fields = ['API_KEY','API_SECRET','ACCESS_TOKEN','KITE_USER_ID','KITE_PASSWORD','KITE_TOTP_SECRET'];
+    // Only include fields the user actually typed into. Empty input = "keep current".
+    const payload = {};
+    for (const k of fields) {
+      const v = document.getElementById('kc-' + k).value.trim();
+      if (v) payload[k] = v;
+    }
+    if (Object.keys(payload).length === 0) {
+      out.innerHTML = '<span style="color:var(--orange)">Nothing to save — paste a value to update.</span>';
+      return;
+    }
+    out.innerHTML = '<span style="color:var(--dim)">Saving…</span>';
+    const r = await fetch('/config/kite', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!d.ok) { out.innerHTML = `<span style="color:var(--red-hi)">⚠ ${d.error || 'save failed'}</span>`; return; }
+    out.innerHTML = `<span style="color:var(--green-hi)">✓ Updated ${(d.changed || []).length} field(s)</span>`;
+    setTimeout(() => { out.textContent = ''; }, 2000);
+    loadKiteCreds();
+  }
 
   // ── Telegram alerts config ────────────────────────────────────────────────
   async function loadTelegramConfig() {

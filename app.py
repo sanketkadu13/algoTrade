@@ -1407,12 +1407,29 @@ threading.Thread(target=_eod_warning_scheduler, daemon=True).start()
 # fired by then, RMS exits at whatever the market gives — we lose price control
 # and the dashboard's recorded P&L diverges from the actual fill.
 #
-# This scheduler forces an exit at 15:15 IST (5 min before RMS) for any
-# running strategy holding MIS positions. Uses the existing _manual_exit_internal
-# helper so the exit path, Telegram alert, and session record match a regular
-# UI-driven exit. Only fires for strategies that BOTH have running=True AND
-# have at least one MIS position currently tracked.
-_MIS_PRESQUARE_TIME = dtime(15, 15)
+# This scheduler forces an exit at the configured time (default 15:15 IST,
+# 5 min before RMS) for any running strategy holding MIS positions. Uses the
+# existing _manual_exit_internal helper so the exit path, Telegram alert, and
+# session record match a regular UI-driven exit. Only fires for strategies
+# that BOTH have running=True AND have at least one MIS position currently tracked.
+_mis_presquare_config = {
+    "enabled": True,
+    "time":    "15:15",   # HH:MM (IST). Must be strictly before 15:20.
+}
+_load_module_config_into("mis_presquare", _mis_presquare_config)
+
+
+def _mis_presquare_dtime() -> dtime:
+    """Parse the configured time string into a dtime, falling back to 15:15
+    on any parse error so the safety net survives bad config."""
+    s = str(_mis_presquare_config.get("time") or "15:15").strip()
+    try:
+        h, m = (int(x) for x in s.split(":"))
+        if 0 <= h < 24 and 0 <= m < 60:
+            return dtime(h, m)
+    except Exception:
+        pass
+    return dtime(15, 15)
 
 
 def _mis_presquare_scheduler():
@@ -1422,9 +1439,11 @@ def _mis_presquare_scheduler():
             now   = _now_ist()
             today = now.date()
             iso   = today.isoformat()
-            if (last_run != iso
+            fire_at = _mis_presquare_dtime()
+            if (_mis_presquare_config.get("enabled", True)
+                and last_run != iso
                 and _is_trading_day(today)
-                and now.time() >= _MIS_PRESQUARE_TIME
+                and now.time() >= fire_at
                 and now.time() < dtime(15, 30)):     # narrow window — only this slot fires
                 with _lock:
                     candidates = []
@@ -1438,7 +1457,7 @@ def _mis_presquare_scheduler():
                     print(f"[mis-presquare] Force-exit {sid} ({name}) at {now.strftime('%H:%M:%S')}")
                     _telegram(
                         f"⏰ *MIS pre-square* [{name}]\n"
-                        f"Forcing exit at {_MIS_PRESQUARE_TIME.strftime('%H:%M')} IST "
+                        f"Forcing exit at {fire_at.strftime('%H:%M')} IST "
                         f"(Kite RMS at 15:20). You control the price, not RMS."
                     )
                     try:
@@ -1453,6 +1472,36 @@ def _mis_presquare_scheduler():
 
 
 threading.Thread(target=_mis_presquare_scheduler, daemon=True).start()
+
+
+@app.route("/config/mis-presquare", methods=["GET"])
+def mis_presquare_get():
+    """Current MIS pre-square config (enabled + HH:MM)."""
+    return jsonify({"ok": True, "config": dict(_mis_presquare_config)})
+
+
+@app.route("/config/mis-presquare", methods=["POST"])
+def mis_presquare_set():
+    """Update MIS pre-square config. Body: {enabled?: bool, time?: 'HH:MM'}.
+    Time must be strictly before 15:20 IST — Kite RMS waits for no one."""
+    d = request.json or {}
+    if "enabled" in d:
+        _mis_presquare_config["enabled"] = bool(d["enabled"])
+    if "time" in d:
+        v = str(d["time"]).strip()[:5]
+        try:
+            h, m = (int(x) for x in v.split(":"))
+            if not (0 <= h < 24 and 0 <= m < 60):
+                raise ValueError("out of range")
+        except Exception:
+            return jsonify({"ok": False, "error": "time must be HH:MM"}), 400
+        # Hard guardrail: refuse anything >= 15:20 IST.
+        if (h, m) >= (15, 20):
+            return jsonify({"ok": False,
+                            "error": "Time must be strictly before 15:20 IST (Kite RMS deadline)."}), 400
+        _mis_presquare_config["time"] = f"{h:02d}:{m:02d}"
+    _save_module_config("mis_presquare", _mis_presquare_config)
+    return jsonify({"ok": True, "config": dict(_mis_presquare_config)})
 
 
 # ── Telegram bot (long-polling, bidirectional) ────────────────────────────────
@@ -2733,6 +2782,77 @@ def telegram_config_test():
         return jsonify({"ok": False, "error": f"Telegram API: {err}"}), 400
     except Exception as e:
         return jsonify({"ok": False, "error": f"network error: {e}"}), 500
+
+
+# ── Kite credentials config ───────────────────────────────────────────────────
+# Read/write Kite API + auto-refresh creds from this instance's .env. Same
+# masking pattern as Telegram: only the last 4 chars are surfaced to the UI
+# so the field can show "saved/not saved" without leaking the secret.
+
+_KITE_CRED_FIELDS = (
+    "API_KEY", "API_SECRET", "ACCESS_TOKEN",
+    "KITE_USER_ID",      # for headless auto-refresh
+    "KITE_PASSWORD",
+    "KITE_TOTP_SECRET",
+)
+
+
+def _mask_secret(v: str, show_last: int = 4) -> str:
+    if not v:
+        return ""
+    if len(v) <= show_last + 2:
+        return "•" * len(v)
+    return ("•" * (len(v) - show_last)) + v[-show_last:]
+
+
+@app.route("/config/kite", methods=["GET"])
+def kite_creds_get():
+    """Current Kite credentials, every secret masked. User_id stays plain
+    (it's a public-ish broker username, not a secret on its own)."""
+    out = {}
+    for k in _KITE_CRED_FIELDS:
+        v = os.getenv(k, "") or ""
+        if k == "KITE_USER_ID":
+            out[k] = {"set": bool(v), "value": v}
+        else:
+            out[k] = {"set": bool(v), "masked": _mask_secret(v)}
+    return jsonify({"ok": True, "creds": out})
+
+
+@app.route("/config/kite", methods=["POST"])
+def kite_creds_set():
+    """Update Kite credentials in this instance's .env. Only fields PRESENT
+    in the body are touched — omitted fields are preserved untouched. To
+    clear a field explicitly, send it as an empty string.
+
+    After write we also refresh the live `kite` object's api_key/access_token
+    so order placement uses the new values without a process restart."""
+    d = request.json or {}
+    env_path = os.path.join(DATA_DIR, ".env")
+    changed = []
+    try:
+        for k in _KITE_CRED_FIELDS:
+            if k not in d:
+                continue
+            v = (d.get(k) or "").strip()
+            set_key(env_path, k, v)
+            os.environ[k] = v
+            changed.append(k)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"failed to write .env: {e}"}), 500
+
+    # Hot-update the live KiteConnect client when API_KEY / ACCESS_TOKEN move,
+    # so order routes use the new creds without a restart.
+    try:
+        if "API_KEY" in changed:
+            kite.api_key = os.getenv("API_KEY", "")
+        if "ACCESS_TOKEN" in changed:
+            kite.set_access_token(os.getenv("ACCESS_TOKEN", ""))
+    except Exception as e:
+        # Non-fatal: the .env is saved; next process restart will pick up cleanly.
+        print(f"[kite-creds] live update skipped: {e}")
+
+    return jsonify({"ok": True, "changed": changed})
 
 
 # ── Arbitrage (Future ↔ Synthetic Future) ─────────────────────────────────────

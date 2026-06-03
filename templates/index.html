@@ -2079,32 +2079,56 @@
     es.onerror=()=>{ setConn(false); es.close(); setTimeout(connectSSE,3000); };
   }
 
-  // ── Browser tab title: live combined MTM across all running strategies ────
-  // Each /stream broadcast updates this. When nothing is running the title
-  // resets to the brand so you don't see a stale value while idle.
+  // ── Browser tab title: live MTM, context-matched to what's on screen ─────
+  // When the user is looking at a specific strategy (Custom/Scheduled tab
+  // with a strategy in focus), the title shows THAT strategy's MTM so the
+  // tab number matches the hero card. For other views (Active/Owl/Straddle/
+  // etc.), the title falls back to the sum across all running strategies.
+  // Nothing running → title resets to the brand.
   const _BASE_TITLE = 'Sniper Eagle';
   function _updateTabTitle(d) {
     const strats = (d && d.strategies) || {};
-    let total = 0;
-    let runningCount = 0;
-    for (const sid in strats) {
-      const s = strats[sid];
-      if (s && s.running) {
-        runningCount++;
-        total += Number(s.mtm) || 0;
+    let val = null;     // the number we'll show in the title
+    let suffix = '';    // optional context tag like ' · all'
+
+    // Helper: find the running scheduled strategy, if any.
+    const findRunningScheduled = () => {
+      for (const sid in strats) {
+        if (strats[sid] && strats[sid].running && strats[sid].type === 'scheduled') return sid;
+      }
+      return null;
+    };
+
+    if (currentView === 'strategies' && currentTab && strats[currentTab] && strats[currentTab].running) {
+      // User is focused on a specific Custom-tab strategy.
+      val = Number(strats[currentTab].mtm) || 0;
+    } else if (currentView === 'scheduled') {
+      const sid = findRunningScheduled();
+      if (sid) val = Number(strats[sid].mtm) || 0;
+    } else {
+      // Aggregate view: sum across all running. Tag as ' · all' when more than
+      // one is running so the user knows it's a combined number.
+      let total = 0, count = 0;
+      for (const sid in strats) {
+        const s = strats[sid];
+        if (s && s.running) { count++; total += Number(s.mtm) || 0; }
+      }
+      if (count > 0) {
+        val = total;
+        if (count > 1) suffix = ` · ${count} strats`;
       }
     }
-    if (runningCount === 0) {
+
+    if (val === null) {
       document.title = _BASE_TITLE;
       return;
     }
-    // Round to integers in the title — 'flapping' decimals are distracting in a
-    // browser tab. The full precision number stays in the hero card.
-    const rounded = Math.round(total);
+    // Whole-rupee rounding — sub-rupee decimals flicker distractingly in tabs.
+    const rounded = Math.round(val);
     const sign  = rounded > 0 ? '+' : rounded < 0 ? '-' : '';
     const dot   = rounded > 0 ? '🟢' : rounded < 0 ? '🔴' : '⚪';
     const abs   = Math.abs(rounded).toLocaleString('en-IN');
-    document.title = `${dot} ${sign}₹${abs} · ${_BASE_TITLE}`;
+    document.title = `${dot} ${sign}₹${abs}${suffix} · ${_BASE_TITLE}`;
   }
 
   // ── Duration timer ────────────────────────────────────────────────────────
@@ -2321,6 +2345,10 @@
     if (v === 'active') {
       loadActive();
     }
+    // Tab title is view-aware — re-compute it on every view switch so it
+    // immediately matches the new context (e.g. switching from Strategy 2
+    // (-₹932) to Strategy 3 (+₹80k) updates the title right away).
+    if (typeof lastData !== 'undefined' && lastData) _updateTabTitle(lastData);
   }
 
   // ── Auctions ─────────────────────────────────────────────────────────────

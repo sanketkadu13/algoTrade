@@ -1402,6 +1402,59 @@ def _eod_warning_scheduler():
 threading.Thread(target=_eod_warning_scheduler, daemon=True).start()
 
 
+# ── MIS pre-square scheduler ──────────────────────────────────────────────────
+# Kite RMS auto-squares MIS positions at 15:20 IST. If our SL/target hasn't
+# fired by then, RMS exits at whatever the market gives — we lose price control
+# and the dashboard's recorded P&L diverges from the actual fill.
+#
+# This scheduler forces an exit at 15:15 IST (5 min before RMS) for any
+# running strategy holding MIS positions. Uses the existing _manual_exit_internal
+# helper so the exit path, Telegram alert, and session record match a regular
+# UI-driven exit. Only fires for strategies that BOTH have running=True AND
+# have at least one MIS position currently tracked.
+_MIS_PRESQUARE_TIME = dtime(15, 15)
+
+
+def _mis_presquare_scheduler():
+    last_run = None
+    while True:
+        try:
+            now   = _now_ist()
+            today = now.date()
+            iso   = today.isoformat()
+            if (last_run != iso
+                and _is_trading_day(today)
+                and now.time() >= _MIS_PRESQUARE_TIME
+                and now.time() < dtime(15, 30)):     # narrow window — only this slot fires
+                with _lock:
+                    candidates = []
+                    for sid, s in strategies.items():
+                        if not s.get("running"):
+                            continue
+                        positions = s.get("positions") or []
+                        if any((p.get("product") or "").upper() == "MIS" for p in positions):
+                            candidates.append((sid, s.get("name", sid)))
+                for sid, name in candidates:
+                    print(f"[mis-presquare] Force-exit {sid} ({name}) at {now.strftime('%H:%M:%S')}")
+                    _telegram(
+                        f"⏰ *MIS pre-square* [{name}]\n"
+                        f"Forcing exit at {_MIS_PRESQUARE_TIME.strftime('%H:%M')} IST "
+                        f"(Kite RMS at 15:20). You control the price, not RMS."
+                    )
+                    try:
+                        _manual_exit_internal(sid, source="mis_presquare")
+                    except Exception as e:
+                        print(f"[mis-presquare] exit failed for {sid}: {e}")
+                        _telegram(f"⚠️ MIS pre-square exit FAILED [{name}]: {e}")
+                last_run = iso
+        except Exception as e:
+            print(f"[mis-presquare] {e}")
+        time.sleep(30)
+
+
+threading.Thread(target=_mis_presquare_scheduler, daemon=True).start()
+
+
 # ── Telegram bot (long-polling, bidirectional) ────────────────────────────────
 # Token/chat_id read from os.environ on every call so the UI's
 # /config/telegram POST can hot-update them without a process restart.
@@ -1979,6 +2032,44 @@ def _has_scheduled_strategy() -> str | None:
                 return sid
     return None
 
+
+def _symbol_key(instruments) -> frozenset:
+    """Normalize a list of instrument dicts to a frozenset for set-equality
+    comparison (order-independent). Bad/empty entries are dropped."""
+    out = set()
+    for i in (instruments or []):
+        sym  = (i.get("tradingsymbol") or "").strip().upper()
+        exch = (i.get("exchange")      or "").strip().upper()
+        if sym and exch:
+            out.add((sym, exch))
+    return frozenset(out)
+
+
+def _find_armed_duplicate(skip_sid, symbols, time_str: str):
+    """Return sid of an existing armed strategy whose (symbols, auto_entry_time)
+    match the proposed values, or None.
+
+    Used to hard-block the 'two identical scheduled strangles fire at the same
+    time' bug we hit on 2026-06-02. Pass skip_sid=None when checking a
+    not-yet-created strategy (template apply, create_strategy)."""
+    if not time_str:
+        return None
+    key = _symbol_key(symbols)
+    if not key:
+        return None
+    norm_time = str(time_str).strip()[:5]
+    with _lock:
+        for sid, s in strategies.items():
+            if sid == skip_sid:
+                continue
+            if not s.get("auto_entry_enabled"):
+                continue
+            if (str(s.get("auto_entry_time") or "").strip()[:5]) != norm_time:
+                continue
+            if _symbol_key(s.get("selected") or []) == key:
+                return sid
+    return None
+
 @app.route("/strategies", methods=["POST"])
 def create_strategy():
     data = request.json or {}
@@ -2057,11 +2148,24 @@ def set_instruments(sid: str):
     if sid not in strategies:
         return jsonify({"ok": False, "msg": "Strategy not found"})
     instrs = (request.json or {}).get("instruments", [])
+    normalized = [
+        {"tradingsymbol": i["tradingsymbol"].upper(), "exchange": i["exchange"].upper()}
+        for i in instrs
+    ]
+    # Duplicate hard-block: only bites when this strategy is auto-armed. The
+    # idle case is fine — strategies without auto_entry can share symbols
+    # freely (e.g. manual entry on the same strangle).
     with _lock:
-        strategies[sid]["selected"] = [
-            {"tradingsymbol": i["tradingsymbol"].upper(), "exchange": i["exchange"].upper()}
-            for i in instrs
-        ]
+        is_armed = bool(strategies[sid].get("auto_entry_enabled"))
+        ae_time  = strategies[sid].get("auto_entry_time", "10:00")
+    if is_armed:
+        dup = _find_armed_duplicate(sid, normalized, ae_time)
+        if dup:
+            return jsonify({"ok": False,
+                            "msg": f"Symbols + auto-entry time match armed strategy "
+                                   f"'{strategies[dup].get('name', dup)}' ({dup}). Disable that one or change the time."}), 400
+    with _lock:
+        strategies[sid]["selected"] = normalized
     _log(sid, f"Instruments: {', '.join(i['tradingsymbol'] for i in instrs) or 'none'}")
     _save_config()
     broadcast()
@@ -2089,6 +2193,20 @@ def update_auto_entry(sid: str):
     if sid not in strategies:
         return jsonify({"ok": False, "msg": "Strategy not found"})
     data = request.json or {}
+    # Compute the proposed end state to evaluate the duplicate hard-block.
+    with _lock:
+        cur = strategies[sid]
+        proposed_enabled = bool(data.get("auto_entry_enabled", cur.get("auto_entry_enabled", False)))
+        proposed_time    = str(data.get("auto_entry_time",    cur.get("auto_entry_time", "10:00")))[:5]
+        symbols          = cur.get("selected") or []
+    # Only check when the result would be 'armed'. Disabling never collides.
+    if proposed_enabled:
+        dup = _find_armed_duplicate(sid, symbols, proposed_time)
+        if dup:
+            return jsonify({"ok": False,
+                            "msg": f"Another armed strategy ('{strategies[dup].get('name', dup)}' / {dup}) "
+                                   f"already has the same symbols + auto-entry time. "
+                                   f"Disable that one or change this time."}), 400
     with _lock:
         s = strategies[sid]
         if "auto_entry_enabled" in data:
@@ -2318,6 +2436,15 @@ def create_from_template():
     tpl = next((t for t in _load_templates() if t["name"] == tpl_name), None)
     if not tpl:
         return jsonify({"ok": False, "msg": "Template not found"})
+    # Duplicate hard-block: if the template would create an armed strategy
+    # whose symbols + auto_entry_time match an existing armed one, refuse.
+    if tpl.get("auto_entry_enabled"):
+        dup = _find_armed_duplicate(None, tpl.get("selected") or [],
+                                    tpl.get("auto_entry_time") or "10:00")
+        if dup:
+            return jsonify({"ok": False,
+                            "msg": f"This template's symbols + auto-entry time match armed "
+                                   f"'{strategies[dup].get('name', dup)}' ({dup}). Disable that one first."}), 400
     sid = _new_strategy(new_name or tpl_name)
     with _lock:
         strategies[sid]["type"] = new_type

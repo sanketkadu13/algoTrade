@@ -904,6 +904,19 @@
     <div class="hero-label">Combined MTM</div>
     <div class="hero-num" id="hero-num">₹ 0.00</div>
     <div class="hero-meta">
+      <!-- Exit MTM: what you'd realize if you exited NOW (uses bid for longs,
+           ask for shorts). Slippage = MTM − Exit MTM (positive = you'd lose
+           on exit). Both only useful while running; backend fills them in. -->
+      <div class="hero-stat">
+        <div class="hero-stat-label">Exit MTM</div>
+        <div class="hero-stat-val" id="hero-exit-mtm">—</div>
+      </div>
+      <div class="hero-divider"></div>
+      <div class="hero-stat">
+        <div class="hero-stat-label">Slippage</div>
+        <div class="hero-stat-val orange" id="hero-slippage">—</div>
+      </div>
+      <div class="hero-divider"></div>
       <div class="hero-stat">
         <div class="hero-stat-label">Target</div>
         <div class="hero-stat-val" id="tgt-profit">—</div>
@@ -951,7 +964,17 @@
   <div class="panels">
     <div class="panel">
       <div class="panel-title">P&amp;L Targets</div>
+      <!-- Per-trigger enable toggles. Disabled = value still saved but the
+           monitor will not fire on it. Independent for target and SL. -->
+      <div class="toggle-row" style="margin-bottom:6px">
+        <span class="toggle-label">Profit Target</span>
+        <label class="sw"><input type="checkbox" id="tgt-chk" onchange="onTargetToggle()" checked><div class="sw-track"></div></label>
+      </div>
       <div class="field"><label>Profit Target ₹</label><input type="number" id="inp-profit" min="0" placeholder="e.g. 2500" oninput="this._touched=true"></div>
+      <div class="toggle-row" style="margin:10px 0 6px">
+        <span class="toggle-label">Loss Limit (SL)</span>
+        <label class="sw"><input type="checkbox" id="sl-chk" onchange="onSlToggle()" checked><div class="sw-track"></div></label>
+      </div>
       <div class="field"><label>Loss Limit ₹</label><input type="number" id="inp-loss" min="0" placeholder="e.g. 2000" oninput="this._touched=true"></div>
       <button class="btn-save" id="btn-tgt" onclick="saveTargets()">Save Targets</button>
     </div>
@@ -1074,7 +1097,15 @@
       <div class="panels">
         <div class="panel">
           <div class="panel-title">P&amp;L Targets</div>
+          <div class="toggle-row" style="margin-bottom:6px">
+            <span class="toggle-label">Profit Target</span>
+            <label class="sw"><input type="checkbox" id="sch-tgt-chk" onchange="schOnTargetToggle()" checked><div class="sw-track"></div></label>
+          </div>
           <div class="field"><label>Profit Target ₹</label><input type="number" id="sch-target" min="0" placeholder="e.g. 2500" oninput="this._touched=true"></div>
+          <div class="toggle-row" style="margin:10px 0 6px">
+            <span class="toggle-label">Loss Limit (SL)</span>
+            <label class="sw"><input type="checkbox" id="sch-sl-chk" onchange="schOnSlToggle()" checked><div class="sw-track"></div></label>
+          </div>
           <div class="field"><label>Loss Limit ₹</label><input type="number" id="sch-sl" min="0" placeholder="e.g. 2000" oninput="this._touched=true"></div>
           <button class="btn-save" id="sch-btn-targets" onclick="schSaveTargets()">Save Targets</button>
         </div>
@@ -3725,6 +3756,11 @@
     const lim = document.getElementById('sch-sl');
     if (tgt && !tgt._touched) tgt.value = s.profit_target || 2500;
     if (lim && !lim._touched) lim.value = s.loss_limit    || 2000;
+    const tgtChk = document.getElementById('sch-tgt-chk');
+    const slChk  = document.getElementById('sch-sl-chk');
+    // Default: both ON (backwards compatible with older saved state without these fields).
+    if (tgtChk) tgtChk.checked = (s.profit_target_enabled !== false);
+    if (slChk)  slChk.checked  = (s.loss_limit_enabled    !== false);
 
     // ── Trailing SL (prominent) ────
     const trChk = document.getElementById('sch-trail-chk');
@@ -3847,8 +3883,23 @@
 
   function _schLiveMtmHtml(s) {
     const cls = s.mtm > 0 ? 'pos' : s.mtm < 0 ? 'neg' : '';
+    const ecls = (s.exit_mtm ?? 0) > 0 ? 'pos' : (s.exit_mtm ?? 0) < 0 ? 'neg' : '';
+    const slip = s.slippage ?? ((s.mtm ?? 0) - (s.exit_mtm ?? 0));
+    const slipCls = Math.abs(slip) > 0.5 ? 'orange' : '';
+    const tDim = (s.profit_target_enabled === false) ? 'opacity:.4;text-decoration:line-through' : '';
+    const sDim = (s.loss_limit_enabled    === false) ? 'opacity:.4;text-decoration:line-through' : '';
     const positions = (s.positions || []).map(p => {
       const pcls = p.mtm > 0 ? 'pos' : p.mtm < 0 ? 'neg' : '';
+      // Per-position bid/ask + exit MTM row (only if depth is available).
+      const bidAsk = (p.bid || p.ask)
+        ? `<div class="pos-row">
+            <div class="stat"><div class="stat-label">Bid</div><div class="stat-val">${(p.bid||0).toFixed(2)}</div></div>
+            <div class="stat"><div class="stat-label">Ask</div><div class="stat-val">${(p.ask||0).toFixed(2)}</div></div>
+          </div>
+          <div class="pos-row">
+            <div class="stat"><div class="stat-label">Exit</div><div class="stat-val">${(p.exit_price||0).toFixed(2)}</div></div>
+            <div class="stat"><div class="stat-label">Exit MTM</div><div class="stat-val ${(p.exit_mtm||0) > 0 ? 'pos' : (p.exit_mtm||0) < 0 ? 'neg' : ''}">₹${(p.exit_mtm||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+          </div>` : '';
       return `<div class="pos-card" style="margin-bottom:8px">
         <div class="pos-header">${escHtml(p.sym)} · ${p.exch}</div>
         <div class="pos-body">
@@ -3860,6 +3911,7 @@
             <div class="stat"><div class="stat-label">Qty</div><div class="stat-val">${p.qty}</div></div>
             <div class="stat"><div class="stat-label">MTM</div><div class="stat-val ${pcls}">₹${(p.mtm||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
           </div>
+          ${bidAsk}
         </div>
       </div>`;
     }).join('');
@@ -3868,9 +3920,13 @@
         <div class="hero-label">Combined MTM</div>
         <div class="hero-num ${cls}">₹ ${(s.mtm||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div>
         <div class="hero-meta">
-          <div class="hero-stat"><div class="hero-stat-label">Target</div><div class="hero-stat-val">+₹${(s.profit_target||0).toLocaleString('en-IN')}</div></div>
+          <div class="hero-stat"><div class="hero-stat-label">Exit MTM</div><div class="hero-stat-val ${ecls}">${s.exit_mtm!=null?'₹'+s.exit_mtm.toLocaleString('en-IN',{minimumFractionDigits:2}):'—'}</div></div>
           <div class="hero-divider"></div>
-          <div class="hero-stat"><div class="hero-stat-label">Stop</div><div class="hero-stat-val">-₹${(s.loss_limit||0).toLocaleString('en-IN')}</div></div>
+          <div class="hero-stat"><div class="hero-stat-label">Slippage</div><div class="hero-stat-val ${slipCls}">${Math.abs(slip).toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+          <div class="hero-divider"></div>
+          <div class="hero-stat" style="${tDim}"><div class="hero-stat-label">Target</div><div class="hero-stat-val">+₹${(s.profit_target||0).toLocaleString('en-IN')}</div></div>
+          <div class="hero-divider"></div>
+          <div class="hero-stat" style="${sDim}"><div class="hero-stat-label">Stop</div><div class="hero-stat-val">-₹${(s.loss_limit||0).toLocaleString('en-IN')}</div></div>
           <div class="hero-divider"></div>
           <div class="hero-stat"><div class="hero-stat-label">Peak Today</div><div class="hero-stat-val pos">${s.peak_mtm_day!=null?'₹'+s.peak_mtm_day.toLocaleString('en-IN',{minimumFractionDigits:2}):'—'}</div></div>
         </div>
@@ -3991,9 +4047,14 @@
     const sid = found.sid;
     const pt = parseFloat(document.getElementById('sch-target').value) || 2500;
     const ll = parseFloat(document.getElementById('sch-sl').value)     || 2000;
+    const tEn = document.getElementById('sch-tgt-chk').checked;
+    const sEn = document.getElementById('sch-sl-chk').checked;
     await fetch('/config/' + sid, {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({profit_target: pt, loss_limit: ll})
+      body: JSON.stringify({
+        profit_target: pt, loss_limit: ll,
+        profit_target_enabled: tEn, loss_limit_enabled: sEn,
+      })
     });
     ['sch-target','sch-sl'].forEach(id => {
       const e = document.getElementById(id); if (e) e._touched = false;
@@ -4037,6 +4098,22 @@
     fetch('/config/' + sid, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({trail_enabled: chk.checked})
+    });
+  }
+  function schOnTargetToggle() {
+    const found = _findScheduledStrategy(); if (!found) return;
+    const chk = document.getElementById('sch-tgt-chk');
+    fetch('/config/' + found.sid, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({profit_target_enabled: chk.checked})
+    });
+  }
+  function schOnSlToggle() {
+    const found = _findScheduledStrategy(); if (!found) return;
+    const chk = document.getElementById('sch-sl-chk');
+    fetch('/config/' + found.sid, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({loss_limit_enabled: chk.checked})
     });
   }
 
@@ -4310,6 +4387,13 @@
 
   function posCardHTML(p,i) {
     const pc=pct(p.ltp,p.avg);
+    // Bid/ask + exit MTM row only rendered when backend has depth data.
+    const bidAskRow = (p.bid || p.ask) ? `
+        <div class="pos-row">
+          <div class="stat"><span class="stat-label">Bid</span><span class="stat-val" id="pbid${i}">${plain(p.bid||0)}</span></div>
+          <div class="stat"><span class="stat-label">Ask</span><span class="stat-val" id="pask${i}">${plain(p.ask||0)}</span></div>
+        </div>
+        <div class="pos-mtm-row stat"><span class="stat-label">Exit MTM</span><span class="stat-val ${cls(p.exit_mtm)}" id="pemtm${i}">${inr(p.exit_mtm||0)}</span></div>` : '';
     return `<div class="pos-card">
       <div class="pos-header">${p.sym}</div>
       <div class="pos-body">
@@ -4322,6 +4406,7 @@
           <div class="stat"><span class="stat-label">Exchange</span><span class="stat-val" style="font-size:12px;color:var(--dim)">${p.exch}</span></div>
         </div>
         <div class="pos-mtm-row stat"><span class="stat-label">MTM</span><span class="stat-val ${cls(p.mtm)}" id="pm${i}">${inr(p.mtm)}</span></div>
+        ${bidAskRow}
       </div>
     </div>`;
   }
@@ -4334,6 +4419,17 @@
     const pc=pct(p.ltp,p.avg); pctEl.textContent=pc.text; pctEl.className='stat-pct '+pc.cls;
     const mt=inr(p.mtm);
     if (mtmEl.textContent!==mt){mtmEl.textContent=mt;mtmEl.className='stat-val '+cls(p.mtm);mtmEl.classList.add('flash');setTimeout(()=>mtmEl.classList.remove('flash'),260);}
+    // Bid/ask/exit MTM updates — only when those rows were rendered (cards from
+    // before depth-data feed will just lack the elements, which is fine).
+    const bidEl =document.getElementById('pbid'+i);
+    const askEl =document.getElementById('pask'+i);
+    const emtmEl=document.getElementById('pemtm'+i);
+    if (bidEl)  bidEl.textContent  = plain(p.bid||0);
+    if (askEl)  askEl.textContent  = plain(p.ask||0);
+    if (emtmEl){
+      const ev = inr(p.exit_mtm||0);
+      if (emtmEl.textContent!==ev){emtmEl.textContent=ev; emtmEl.className='stat-val '+cls(p.exit_mtm);}
+    }
   }
 
   // ── Chart ────────────────────────────────────────────────────────────────
@@ -4480,10 +4576,28 @@
     const profit=parseFloat(document.getElementById('inp-profit').value);
     const loss=parseFloat(document.getElementById('inp-loss').value);
     if (isNaN(profit)||isNaN(loss)) return;
-    await fetch('/config/'+currentTab,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profit_target:profit,loss_limit:loss})});
+    const tEn=document.getElementById('tgt-chk').checked;
+    const sEn=document.getElementById('sl-chk').checked;
+    await fetch('/config/'+currentTab,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      profit_target:profit, loss_limit:loss,
+      profit_target_enabled:tEn, loss_limit_enabled:sEn,
+    })});
     document.getElementById('inp-profit')._touched=false;
     document.getElementById('inp-loss')._touched=false;
     btn.textContent='Saved ✓';btn.classList.add('ok');setTimeout(()=>{btn.textContent='Save Targets';btn.classList.remove('ok');},1500);
+  }
+
+  // Flip the enable flag immediately on toggle change (matches the trail-toggle
+  // pattern: a checkbox change should take effect without a Save click).
+  function onTargetToggle() {
+    const chk=document.getElementById('tgt-chk');
+    if (!currentTab) return;
+    fetch('/config/'+currentTab,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profit_target_enabled:chk.checked})});
+  }
+  function onSlToggle() {
+    const chk=document.getElementById('sl-chk');
+    if (!currentTab) return;
+    fetch('/config/'+currentTab,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loss_limit_enabled:chk.checked})});
   }
 
   async function saveTrail() {
@@ -4601,8 +4715,32 @@
     }
 
     // Hero meta
-    document.getElementById('tgt-profit').textContent=s.profit_target!=null?'+₹'+s.profit_target.toLocaleString('en-IN'):'—';
-    document.getElementById('tgt-loss').textContent=s.loss_limit!=null?'-₹'+s.loss_limit.toLocaleString('en-IN'):'—';
+    // Target/SL: dimmed when their enable toggle is off so user can see the
+    // value but knows it won't fire. Strikethrough conveys "ignored".
+    const tEnVisible = (s.profit_target_enabled !== false);
+    const sEnVisible = (s.loss_limit_enabled    !== false);
+    const tgtProfitEl=document.getElementById('tgt-profit');
+    const tgtLossEl  =document.getElementById('tgt-loss');
+    tgtProfitEl.textContent=s.profit_target!=null?'+₹'+s.profit_target.toLocaleString('en-IN'):'—';
+    tgtLossEl.textContent  =s.loss_limit!=null?'-₹'+s.loss_limit.toLocaleString('en-IN'):'—';
+    tgtProfitEl.style.textDecoration = tEnVisible ? 'none' : 'line-through';
+    tgtProfitEl.style.opacity        = tEnVisible ? '1'    : '0.4';
+    tgtLossEl.style.textDecoration   = sEnVisible ? 'none' : 'line-through';
+    tgtLossEl.style.opacity          = sEnVisible ? '1'    : '0.4';
+    // Exit MTM + slippage (only meaningful while running with positions)
+    const exitEl = document.getElementById('hero-exit-mtm');
+    const slipEl = document.getElementById('hero-slippage');
+    if (s.running && s.exit_mtm != null) {
+      exitEl.textContent = inr(s.exit_mtm);
+      exitEl.className   = 'hero-stat-val ' + cls(s.exit_mtm);
+      const slip = s.slippage ?? (s.mtm - s.exit_mtm);
+      slipEl.textContent = '₹' + Math.abs(slip).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+      // Positive slippage = MTM is BETTER than exit MTM (exit costs money)
+      slipEl.className   = 'hero-stat-val ' + (slip > 0.5 ? 'orange' : 'pos');
+    } else {
+      exitEl.textContent = '—'; exitEl.className = 'hero-stat-val';
+      slipEl.textContent = '—'; slipEl.className = 'hero-stat-val';
+    }
     const peakEl=document.getElementById('peak-mtm-day');
     peakEl.textContent=s.peak_mtm_day!=null?inr(s.peak_mtm_day):'—';
     const trailStat=document.getElementById('trail-stat'),trailDiv=document.getElementById('trail-divider');
@@ -4628,6 +4766,11 @@
       if (!elA._touched&&s.trail_activate_at!=null) elA.value=s.trail_activate_at;
       if (!elB._touched&&s.trail_by!=null)          elB.value=s.trail_by;
     }
+    // Toggles sync regardless of running state — the user should see the
+    // current backend state. Default ON when fields are missing (backwards compat).
+    const tgtChk2=document.getElementById('tgt-chk'), slChk2=document.getElementById('sl-chk');
+    if (tgtChk2) tgtChk2.checked = (s.profit_target_enabled !== false);
+    if (slChk2)  slChk2.checked  = (s.loss_limit_enabled    !== false);
     const chk=document.getElementById('trail-chk');
     if (!s.running&&!chk._touched) chk.checked=!!s.trail_enabled;
     document.getElementById('trail-body').className='trail-body'+(s.trail_enabled?' on':'');

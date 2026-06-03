@@ -66,6 +66,10 @@ def _make_strategy(name: str, sid: str, type_: str = "custom") -> dict:
         "running": False, "status": "idle",
         "mtm": 0.0, "positions": [], "selected": [],
         "profit_target": 2500.0, "loss_limit": 2000.0,
+        # Independent toggles for each exit trigger. Default both ON to
+        # preserve the original behavior (target + SL always-on).
+        "profit_target_enabled": True,
+        "loss_limit_enabled":    True,
         "trail_enabled": False, "trail_activate_at": 500.0, "trail_by": 300.0,
         "peak_mtm": None, "trail_sl": None,
         "peak_mtm_day": None, "monitoring_start_ts": None,
@@ -134,9 +138,11 @@ def _save_config():
                 "name":                s["name"],
                 "type":                s.get("type", "custom"),
                 "selected":            s["selected"],
-                "profit_target":       s["profit_target"],
-                "loss_limit":          s["loss_limit"],
-                "trail_enabled":       s["trail_enabled"],
+                "profit_target":         s["profit_target"],
+                "loss_limit":            s["loss_limit"],
+                "profit_target_enabled": s.get("profit_target_enabled", True),
+                "loss_limit_enabled":    s.get("loss_limit_enabled",    True),
+                "trail_enabled":         s["trail_enabled"],
                 "trail_activate_at":   s["trail_activate_at"],
                 "trail_by":            s["trail_by"],
                 "auto_entry_enabled":  s.get("auto_entry_enabled", False),
@@ -196,6 +202,7 @@ def _init_strategy_slot(sid: str, name: str):
     )
 
 _CONFIG_FIELDS = ("name", "type", "selected", "profit_target", "loss_limit",
+                  "profit_target_enabled", "loss_limit_enabled",
                   "trail_enabled", "trail_activate_at", "trail_by",
                   "auto_entry_enabled", "auto_entry_time", "auto_entry_qty",
                   "auto_entry_product",
@@ -562,18 +569,46 @@ def monitor_loop(sid: str):
     while not stop_ev.is_set():
         try:
             keys   = [f"{t['exch']}:{t['sym']}" for t in tracked]
-            quotes = kite.ltp(keys)
+            # quote() returns LTP + depth in one call. Same rate-limit cost as
+            # ltp() for our small instrument count; gives us bid/ask for the
+            # exit-aware MTM display alongside the current LTP-based MTM.
+            quotes = kite.quote(keys)
 
-            combined = 0.0
+            combined         = 0.0
+            combined_exit    = 0.0
             for t in tracked:
-                t["ltp"] = quotes[f"{t['exch']}:{t['sym']}"]["last_price"]
+                q = quotes.get(f"{t['exch']}:{t['sym']}") or {}
+                t["ltp"] = float(q.get("last_price") or 0)
                 t["mtm"] = _calc_mtm(t["avg"], t["ltp"], t["qty"], t.get("mult", 1))
                 combined += t["mtm"]
+
+                # Bid/ask from top of book for exit-aware MTM.
+                depth = q.get("depth") or {}
+                bids  = depth.get("buy")  or []
+                asks  = depth.get("sell") or []
+                bid = float(bids[0]["price"]) if bids and bids[0].get("price") else 0.0
+                ask = float(asks[0]["price"]) if asks and asks[0].get("price") else 0.0
+                # Exit price assumption: a long position exits by SELLING at the
+                # best bid; a short exits by BUYING at the best ask. Fall back
+                # to LTP if depth missing so exit_mtm degrades gracefully.
+                if t["qty"] >= 0:
+                    exit_price = bid if bid > 0 else t["ltp"]
+                else:
+                    exit_price = ask if ask > 0 else t["ltp"]
+                t["bid"] = bid
+                t["ask"] = ask
+                t["exit_price"] = exit_price
+                t["exit_mtm"]   = _calc_mtm(t["avg"], exit_price, t["qty"], t.get("mult", 1))
+                combined_exit  += t["exit_mtm"]
+
+            slippage = combined - combined_exit
 
             with _lock:
                 s             = strategies[sid]
                 profit_target = s["profit_target"]
                 loss_limit    = s["loss_limit"]
+                target_on     = bool(s.get("profit_target_enabled", True))
+                sl_on         = bool(s.get("loss_limit_enabled",    True))
                 trail_enabled = s["trail_enabled"]
                 trail_by      = s["trail_by"]
                 activate_at   = s["trail_activate_at"]
@@ -599,6 +634,8 @@ def monitor_loop(sid: str):
                 new_peak_day = max(s["peak_mtm_day"] or combined, combined)
                 s.update({
                     "mtm":          combined,
+                    "exit_mtm":     combined_exit,
+                    "slippage":     slippage,
                     "positions":    [{**t} for t in tracked],
                     "peak_mtm":     peak_mtm,
                     "trail_sl":     trail_sl,
@@ -631,10 +668,12 @@ def monitor_loop(sid: str):
 
             broadcast(new_point=new_point, sid=sid)
 
+            # Target / SL checks honor their independent enable flags.
+            # Trail SL has its own enable (`trail_enabled`) — already checked above.
             trigger = None
-            if combined >= profit_target:
+            if target_on and combined >= profit_target:
                 trigger = f"PROFIT TARGET HIT (+₹{combined:,.2f})"
-            elif combined <= -loss_limit:
+            elif sl_on and combined <= -loss_limit:
                 trigger = f"LOSS LIMIT HIT (-₹{abs(combined):,.2f})"
             elif trail_sl is not None and combined <= trail_sl:
                 trigger = f"TRAILING SL HIT at ₹{trail_sl:,.2f}"
@@ -2426,7 +2465,8 @@ def update_config(sid: str):
     # Snapshot before-change values for audit alert if running
     was_running = strategies[sid].get("running", False)
     before = {k: strategies[sid].get(k) for k in
-              ("profit_target","loss_limit","trail_enabled","trail_activate_at","trail_by")}
+              ("profit_target","loss_limit","profit_target_enabled","loss_limit_enabled",
+               "trail_enabled","trail_activate_at","trail_by")}
     with _lock:
         s = strategies[sid]
         if "profit_target" in data:
@@ -2441,6 +2481,12 @@ def update_config(sid: str):
             if sid == _sid1:
                 set_key(env_path, "LOSS_LIMIT", str(v))
             _log(sid, f"Loss limit → ₹{v:,.0f}")
+        if "profit_target_enabled" in data:
+            s["profit_target_enabled"] = bool(data["profit_target_enabled"])
+            _log(sid, f"Profit target {'enabled' if s['profit_target_enabled'] else 'disabled'}")
+        if "loss_limit_enabled" in data:
+            s["loss_limit_enabled"] = bool(data["loss_limit_enabled"])
+            _log(sid, f"Loss limit {'enabled' if s['loss_limit_enabled'] else 'disabled'}")
         if "trail_enabled" in data:
             s["trail_enabled"] = bool(data["trail_enabled"])
             if not s["trail_enabled"]:

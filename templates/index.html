@@ -2074,8 +2074,37 @@
       const d=JSON.parse(e.data);
       if (d.heartbeat) return;
       render(d);
+      _updateTabTitle(d);
     };
     es.onerror=()=>{ setConn(false); es.close(); setTimeout(connectSSE,3000); };
+  }
+
+  // ── Browser tab title: live combined MTM across all running strategies ────
+  // Each /stream broadcast updates this. When nothing is running the title
+  // resets to the brand so you don't see a stale value while idle.
+  const _BASE_TITLE = 'Sniper Eagle';
+  function _updateTabTitle(d) {
+    const strats = (d && d.strategies) || {};
+    let total = 0;
+    let runningCount = 0;
+    for (const sid in strats) {
+      const s = strats[sid];
+      if (s && s.running) {
+        runningCount++;
+        total += Number(s.mtm) || 0;
+      }
+    }
+    if (runningCount === 0) {
+      document.title = _BASE_TITLE;
+      return;
+    }
+    // Round to integers in the title — 'flapping' decimals are distracting in a
+    // browser tab. The full precision number stays in the hero card.
+    const rounded = Math.round(total);
+    const sign  = rounded > 0 ? '+' : rounded < 0 ? '-' : '';
+    const dot   = rounded > 0 ? '🟢' : rounded < 0 ? '🔴' : '⚪';
+    const abs   = Math.abs(rounded).toLocaleString('en-IN');
+    document.title = `${dot} ${sign}₹${abs} · ${_BASE_TITLE}`;
   }
 
   // ── Duration timer ────────────────────────────────────────────────────────

@@ -971,11 +971,24 @@
         <label class="sw"><input type="checkbox" id="tgt-chk" onchange="onTargetToggle()" checked><div class="sw-track"></div></label>
       </div>
       <div class="field"><label>Profit Target ₹</label><input type="number" id="inp-profit" min="0" placeholder="e.g. 2500" oninput="this._touched=true"></div>
+      <div class="field"><label>Fire on</label>
+        <select id="inp-tgt-basis" onchange="onTargetBasisChange()" style="background:var(--bg);border:1px solid var(--border-dim);border-radius:4px;padding:8px 10px;color:var(--text);font-family:var(--mono);font-size:12px">
+          <option value="ltp">LTP MTM (default)</option>
+          <option value="exit">Exit MTM (uses bid/ask)</option>
+        </select>
+      </div>
       <div class="toggle-row" style="margin:10px 0 6px">
         <span class="toggle-label">Loss Limit (SL)</span>
         <label class="sw"><input type="checkbox" id="sl-chk" onchange="onSlToggle()" checked><div class="sw-track"></div></label>
       </div>
       <div class="field"><label>Loss Limit ₹</label><input type="number" id="inp-loss" min="0" placeholder="e.g. 2000" oninput="this._touched=true"></div>
+      <div class="field"><label>Fire on</label>
+        <select id="inp-sl-basis" onchange="onSlBasisChange()" style="background:var(--bg);border:1px solid var(--border-dim);border-radius:4px;padding:8px 10px;color:var(--text);font-family:var(--mono);font-size:12px">
+          <option value="ltp">LTP MTM (default)</option>
+          <option value="exit">Exit MTM (uses bid/ask)</option>
+        </select>
+        <span style="color:var(--dim);font-size:10px;margin-top:4px;display:block">Trail SL inherits this basis.</span>
+      </div>
       <button class="btn-save" id="btn-tgt" onclick="saveTargets()">Save Targets</button>
     </div>
     <div class="panel">
@@ -1102,11 +1115,24 @@
             <label class="sw"><input type="checkbox" id="sch-tgt-chk" onchange="schOnTargetToggle()" checked><div class="sw-track"></div></label>
           </div>
           <div class="field"><label>Profit Target ₹</label><input type="number" id="sch-target" min="0" placeholder="e.g. 2500" oninput="this._touched=true"></div>
+          <div class="field"><label>Fire on</label>
+            <select id="sch-tgt-basis" onchange="schOnTargetBasisChange()" style="background:var(--bg);border:1px solid var(--border-dim);border-radius:4px;padding:8px 10px;color:var(--text);font-family:var(--mono);font-size:12px">
+              <option value="ltp">LTP MTM (default)</option>
+              <option value="exit">Exit MTM (uses bid/ask)</option>
+            </select>
+          </div>
           <div class="toggle-row" style="margin:10px 0 6px">
             <span class="toggle-label">Loss Limit (SL)</span>
             <label class="sw"><input type="checkbox" id="sch-sl-chk" onchange="schOnSlToggle()" checked><div class="sw-track"></div></label>
           </div>
           <div class="field"><label>Loss Limit ₹</label><input type="number" id="sch-sl" min="0" placeholder="e.g. 2000" oninput="this._touched=true"></div>
+          <div class="field"><label>Fire on</label>
+            <select id="sch-sl-basis" onchange="schOnSlBasisChange()" style="background:var(--bg);border:1px solid var(--border-dim);border-radius:4px;padding:8px 10px;color:var(--text);font-family:var(--mono);font-size:12px">
+              <option value="ltp">LTP MTM (default)</option>
+              <option value="exit">Exit MTM (uses bid/ask)</option>
+            </select>
+            <span style="color:var(--dim);font-size:10px;margin-top:4px;display:block">Trail SL inherits this basis.</span>
+          </div>
           <button class="btn-save" id="sch-btn-targets" onclick="schSaveTargets()">Save Targets</button>
         </div>
         <div class="panel">
@@ -4000,6 +4026,10 @@
     // Default: both ON (backwards compatible with older saved state without these fields).
     if (tgtChk) tgtChk.checked = (s.profit_target_enabled !== false);
     if (slChk)  slChk.checked  = (s.loss_limit_enabled    !== false);
+    const tgtBasisSch = document.getElementById('sch-tgt-basis');
+    const slBasisSch  = document.getElementById('sch-sl-basis');
+    if (tgtBasisSch) tgtBasisSch.value = (s.profit_target_basis === 'exit') ? 'exit' : 'ltp';
+    if (slBasisSch)  slBasisSch.value  = (s.loss_limit_basis    === 'exit') ? 'exit' : 'ltp';
 
     // ── Trailing SL (prominent) ────
     const trChk = document.getElementById('sch-trail-chk');
@@ -4288,11 +4318,14 @@
     const ll = parseFloat(document.getElementById('sch-sl').value)     || 2000;
     const tEn = document.getElementById('sch-tgt-chk').checked;
     const sEn = document.getElementById('sch-sl-chk').checked;
+    const tBasis = (document.getElementById('sch-tgt-basis')||{}).value || 'ltp';
+    const sBasis = (document.getElementById('sch-sl-basis') ||{}).value || 'ltp';
     await fetch('/config/' + sid, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
         profit_target: pt, loss_limit: ll,
         profit_target_enabled: tEn, loss_limit_enabled: sEn,
+        profit_target_basis: tBasis, loss_limit_basis: sBasis,
       })
     });
     ['sch-target','sch-sl'].forEach(id => {
@@ -4353,6 +4386,22 @@
     fetch('/config/' + found.sid, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({loss_limit_enabled: chk.checked})
+    });
+  }
+  function schOnTargetBasisChange() {
+    const found = _findScheduledStrategy(); if (!found) return;
+    const sel = document.getElementById('sch-tgt-basis');
+    fetch('/config/' + found.sid, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({profit_target_basis: sel.value})
+    });
+  }
+  function schOnSlBasisChange() {
+    const found = _findScheduledStrategy(); if (!found) return;
+    const sel = document.getElementById('sch-sl-basis');
+    fetch('/config/' + found.sid, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({loss_limit_basis: sel.value})
     });
   }
 
@@ -4817,9 +4866,12 @@
     if (isNaN(profit)||isNaN(loss)) return;
     const tEn=document.getElementById('tgt-chk').checked;
     const sEn=document.getElementById('sl-chk').checked;
+    const tBasis=(document.getElementById('inp-tgt-basis')||{}).value || 'ltp';
+    const sBasis=(document.getElementById('inp-sl-basis') ||{}).value || 'ltp';
     await fetch('/config/'+currentTab,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
       profit_target:profit, loss_limit:loss,
       profit_target_enabled:tEn, loss_limit_enabled:sEn,
+      profit_target_basis:tBasis, loss_limit_basis:sBasis,
     })});
     document.getElementById('inp-profit')._touched=false;
     document.getElementById('inp-loss')._touched=false;
@@ -4837,6 +4889,16 @@
     const chk=document.getElementById('sl-chk');
     if (!currentTab) return;
     fetch('/config/'+currentTab,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loss_limit_enabled:chk.checked})});
+  }
+  function onTargetBasisChange() {
+    const sel=document.getElementById('inp-tgt-basis');
+    if (!currentTab) return;
+    fetch('/config/'+currentTab,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profit_target_basis:sel.value})});
+  }
+  function onSlBasisChange() {
+    const sel=document.getElementById('inp-sl-basis');
+    if (!currentTab) return;
+    fetch('/config/'+currentTab,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loss_limit_basis:sel.value})});
   }
 
   async function saveTrail() {
@@ -5010,6 +5072,10 @@
     const tgtChk2=document.getElementById('tgt-chk'), slChk2=document.getElementById('sl-chk');
     if (tgtChk2) tgtChk2.checked = (s.profit_target_enabled !== false);
     if (slChk2)  slChk2.checked  = (s.loss_limit_enabled    !== false);
+    const tgtBasisEl=document.getElementById('inp-tgt-basis');
+    const slBasisEl =document.getElementById('inp-sl-basis');
+    if (tgtBasisEl) tgtBasisEl.value = (s.profit_target_basis === 'exit') ? 'exit' : 'ltp';
+    if (slBasisEl)  slBasisEl.value  = (s.loss_limit_basis    === 'exit') ? 'exit' : 'ltp';
     const chk=document.getElementById('trail-chk');
     if (!s.running&&!chk._touched) chk.checked=!!s.trail_enabled;
     document.getElementById('trail-body').className='trail-body'+(s.trail_enabled?' on':'');

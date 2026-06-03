@@ -70,6 +70,15 @@ def _make_strategy(name: str, sid: str, type_: str = "custom") -> dict:
         # preserve the original behavior (target + SL always-on).
         "profit_target_enabled": True,
         "loss_limit_enabled":    True,
+        # Which MTM basis each trigger compares against — independent for
+        # target vs SL so the user can mix: e.g. SL on exit-MTM (fires earlier
+        # in illiquid books = safer) + target on LTP (easier to hit when bid/ask
+        # is wide). Trail SL inherits loss_limit_basis (same downside-protection
+        # category, no point splitting them).
+        #   "ltp"  → combined MTM from LTP
+        #   "exit" → combined MTM if we exited NOW (bid for longs, ask for shorts)
+        "profit_target_basis": "ltp",
+        "loss_limit_basis":    "ltp",
         "trail_enabled": False, "trail_activate_at": 500.0, "trail_by": 300.0,
         "peak_mtm": None, "trail_sl": None,
         "peak_mtm_day": None, "monitoring_start_ts": None,
@@ -142,6 +151,8 @@ def _save_config():
                 "loss_limit":            s["loss_limit"],
                 "profit_target_enabled": s.get("profit_target_enabled", True),
                 "loss_limit_enabled":    s.get("loss_limit_enabled",    True),
+                "profit_target_basis":   s.get("profit_target_basis",   "ltp"),
+                "loss_limit_basis":      s.get("loss_limit_basis",      "ltp"),
                 "trail_enabled":         s["trail_enabled"],
                 "trail_activate_at":   s["trail_activate_at"],
                 "trail_by":            s["trail_by"],
@@ -203,6 +214,7 @@ def _init_strategy_slot(sid: str, name: str):
 
 _CONFIG_FIELDS = ("name", "type", "selected", "profit_target", "loss_limit",
                   "profit_target_enabled", "loss_limit_enabled",
+                  "profit_target_basis",   "loss_limit_basis",
                   "trail_enabled", "trail_activate_at", "trail_by",
                   "auto_entry_enabled", "auto_entry_time", "auto_entry_qty",
                   "auto_entry_product",
@@ -609,24 +621,31 @@ def monitor_loop(sid: str):
                 loss_limit    = s["loss_limit"]
                 target_on     = bool(s.get("profit_target_enabled", True))
                 sl_on         = bool(s.get("loss_limit_enabled",    True))
+                target_basis  = (s.get("profit_target_basis") or "ltp").lower()
+                sl_basis      = (s.get("loss_limit_basis")    or "ltp").lower()
                 trail_enabled = s["trail_enabled"]
                 trail_by      = s["trail_by"]
                 activate_at   = s["trail_activate_at"]
                 peak_mtm      = s["peak_mtm"]
+            # Per-trigger basis: each check compares against either LTP MTM
+            # (combined) or exit-price MTM (combined_exit). Trail SL inherits
+            # the loss_limit basis since they're both downside protection.
+            target_val = combined_exit if target_basis == "exit" else combined
+            sl_val     = combined_exit if sl_basis     == "exit" else combined
 
             trail_sl = None
             if trail_enabled:
-                if peak_mtm is None and combined >= activate_at:
-                    peak_mtm = combined
-                    _log(sid, f"Trail SL activated — peak ₹{combined:,.2f}")
+                if peak_mtm is None and sl_val >= activate_at:
+                    peak_mtm = sl_val
+                    _log(sid, f"Trail SL activated — peak ₹{sl_val:,.2f}")
                     _telegram(
                         f"📈 *Trail SL ACTIVATED* [{strat_name}]\n"
-                        f"Activated at MTM ₹{combined:+,.2f}\n"
-                        f"Trail SL: ₹{combined - trail_by:+,.2f}  (peak − ₹{trail_by:,.0f})\n"
+                        f"Activated at MTM ₹{sl_val:+,.2f}\n"
+                        f"Trail SL: ₹{sl_val - trail_by:+,.2f}  (peak − ₹{trail_by:,.0f})\n"
                         f"Downside now capped."
                     )
                 if peak_mtm is not None:
-                    peak_mtm = max(peak_mtm, combined)
+                    peak_mtm = max(peak_mtm, sl_val)
                     trail_sl = peak_mtm - trail_by
 
             with _lock:
@@ -668,15 +687,15 @@ def monitor_loop(sid: str):
 
             broadcast(new_point=new_point, sid=sid)
 
-            # Target / SL checks honor their independent enable flags.
-            # Trail SL has its own enable (`trail_enabled`) — already checked above.
+            # Target / SL checks honor their independent enable flags AND
+            # their independent basis (LTP vs Exit-price MTM).
             trigger = None
-            if target_on and combined >= profit_target:
-                trigger = f"PROFIT TARGET HIT (+₹{combined:,.2f})"
-            elif sl_on and combined <= -loss_limit:
-                trigger = f"LOSS LIMIT HIT (-₹{abs(combined):,.2f})"
-            elif trail_sl is not None and combined <= trail_sl:
-                trigger = f"TRAILING SL HIT at ₹{trail_sl:,.2f}"
+            if target_on and target_val >= profit_target:
+                trigger = f"PROFIT TARGET HIT (+₹{target_val:,.2f}, basis={target_basis})"
+            elif sl_on and sl_val <= -loss_limit:
+                trigger = f"LOSS LIMIT HIT (-₹{abs(sl_val):,.2f}, basis={sl_basis})"
+            elif trail_sl is not None and sl_val <= trail_sl:
+                trigger = f"TRAILING SL HIT at ₹{trail_sl:,.2f} (basis={sl_basis})"
 
             if trigger:
                 _log(sid, f"*** {trigger} — placing exit orders ***")
@@ -2663,6 +2682,18 @@ def update_config(sid: str):
         if "loss_limit_enabled" in data:
             s["loss_limit_enabled"] = bool(data["loss_limit_enabled"])
             _log(sid, f"Loss limit {'enabled' if s['loss_limit_enabled'] else 'disabled'}")
+        if "profit_target_basis" in data:
+            v = str(data["profit_target_basis"]).lower().strip()
+            if v not in ("ltp", "exit"):
+                return jsonify({"ok": False, "msg": "profit_target_basis must be 'ltp' or 'exit'"}), 400
+            s["profit_target_basis"] = v
+            _log(sid, f"Profit target basis → {v.upper()} MTM")
+        if "loss_limit_basis" in data:
+            v = str(data["loss_limit_basis"]).lower().strip()
+            if v not in ("ltp", "exit"):
+                return jsonify({"ok": False, "msg": "loss_limit_basis must be 'ltp' or 'exit'"}), 400
+            s["loss_limit_basis"] = v
+            _log(sid, f"Loss limit basis → {v.upper()} MTM (trail SL inherits)")
         if "trail_enabled" in data:
             s["trail_enabled"] = bool(data["trail_enabled"])
             if not s["trail_enabled"]:

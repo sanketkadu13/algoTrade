@@ -1238,12 +1238,20 @@ threading.Thread(target=_eod_scheduler, daemon=True).start()
 _nifty_history: list = []        # list of (datetime_ist, price)
 _velocity_cooldown_until: datetime | None = None
 
+# Pre-open call auction runs 09:00–09:15; the 09:15 open can jump 1%+ off
+# the prior close as auction matches print, which is mechanical, not gamma
+# risk. Skip both the pre-open window and a one-minute settle after open.
+_VELOCITY_WINDOW_OPEN  = dtime(9, 16)
+_VELOCITY_WINDOW_CLOSE = dtime(15, 30)
+
+
 def _nifty_velocity_monitor():
     global _velocity_cooldown_until
     while True:
         try:
             now = _now_ist()
-            if 9 <= now.hour <= 15 and _is_trading_day(now.date()):
+            in_window = (_VELOCITY_WINDOW_OPEN <= now.time() <= _VELOCITY_WINDOW_CLOSE)
+            if in_window and _is_trading_day(now.date()):
                 try:
                     q = kite.quote(["NSE:NIFTY 50"])["NSE:NIFTY 50"]
                     price = q["last_price"]

@@ -1800,6 +1800,29 @@
       </div>
     </div>
 
+    <!-- ─── Section 1b: Kite Token Auto-Refresh ─── -->
+    <div class="panel" style="margin-top:0">
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>🔑 Kite Token Auto-Refresh <span id="auth-status-badge" style="font-weight:normal;font-size:11px;margin-left:8px"></span></span>
+      </div>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:14px;line-height:1.5">
+        Kite access tokens expire daily at <strong>06:00 IST</strong>. The dashboard can refresh automatically every trading day at <strong>08:30 IST</strong> using your User ID + Password + TOTP secret — no daily login needed. Fill the credentials below in the next section, then this panel shows green and the scheduler does its thing.
+      </div>
+      <div id="auth-status-detail" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-family:var(--mono);font-size:12px;color:var(--muted)">
+        <div>Status:           <span id="auth-status-state" style="color:var(--text)">checking…</span></div>
+        <div>Next scheduled:   <span id="auth-status-next" style="color:var(--text)">—</span></div>
+        <div>Last refresh:     <span id="auth-status-last" style="color:var(--text)">—</span></div>
+        <div>Missing creds:    <span id="auth-status-missing" style="color:var(--orange)">—</span></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:14px">
+        <button class="btn-save" onclick="testTokenRefresh()" style="border-color:var(--blue);color:var(--blue);width:auto;padding:7px 16px">Test refresh now</button>
+        <span id="auth-test-result" style="font-family:var(--mono);font-size:11px"></span>
+      </div>
+      <div style="margin-top:14px;font-size:11px;color:var(--dim);line-height:1.6">
+        <strong>Where to get the TOTP secret:</strong> Go to <a href="https://kite.zerodha.com/account/dashboard/personal" target="_blank" rel="noopener" style="color:var(--blue)">kite.zerodha.com → My account → Account settings → Personal → External 2FA apps</a>. Toggle "External 2FA apps", reveal the secret key, paste it as <code>TOTP Secret</code> below. Then re-set 2FA on your authenticator app using the same secret so both keep working.
+      </div>
+    </div>
+
     <!-- ─── Section 2: Kite Connect Credentials ─── -->
     <div class="panel" style="margin-top:0">
       <div class="panel-title">🔑 Kite Connect Credentials</div>
@@ -3157,10 +3180,51 @@
 
   // ── Settings: unified loader ──────────────────────────────────────────────
   async function loadSettings() {
-    // Fan out — three independent /config endpoints.
+    // Fan out — four independent endpoints.
     loadMISConfig();
+    loadAuthStatus();
     loadKiteCreds();
     loadTelegramConfig();
+  }
+
+  // ── Settings: Kite token auto-refresh status ─────────────────────────────
+  async function loadAuthStatus() {
+    const badge = document.getElementById('auth-status-badge');
+    try {
+      const r = await fetch('/auth/status');
+      const d = await r.json();
+      if (!d.ok) { badge.innerHTML = '<span style="color:var(--red-hi)">● load failed</span>'; return; }
+      const enabled = !!d.enabled;
+      document.getElementById('auth-status-state').textContent  = enabled ? 'enabled' : 'disabled (creds missing)';
+      document.getElementById('auth-status-state').style.color  = enabled ? 'var(--green-hi)' : 'var(--red-hi)';
+      document.getElementById('auth-status-next').textContent   = d.next_scheduled || '—';
+      document.getElementById('auth-status-last').textContent   = d.last_refresh   || 'never';
+      const missing = (d.missing || []);
+      document.getElementById('auth-status-missing').textContent = missing.length ? missing.join(', ') : 'none — all set';
+      document.getElementById('auth-status-missing').style.color = missing.length ? 'var(--orange)' : 'var(--green-hi)';
+      badge.innerHTML = enabled
+        ? '<span style="color:var(--green-hi)">● armed</span>'
+        : '<span style="color:var(--red-hi)">● needs creds</span>';
+    } catch (e) {
+      badge.innerHTML = '<span style="color:var(--red-hi)">● load failed</span>';
+    }
+  }
+
+  async function testTokenRefresh() {
+    const out = document.getElementById('auth-test-result');
+    out.innerHTML = '<span style="color:var(--dim)">Running headless TOTP login…</span>';
+    try {
+      const r = await fetch('/auth/auto-refresh', {method: 'POST'});
+      const d = await r.json();
+      if (d.ok) {
+        out.innerHTML = `<span style="color:var(--green-hi)">✓ ${d.msg}</span>`;
+      } else {
+        out.innerHTML = `<span style="color:var(--red-hi)">⚠ ${d.msg}</span>`;
+      }
+      loadAuthStatus();
+    } catch (e) {
+      out.innerHTML = `<span style="color:var(--red-hi)">⚠ ${e.message}</span>`;
+    }
   }
 
   // ── Settings: MIS pre-square ──────────────────────────────────────────────
@@ -3942,12 +4006,46 @@
           <option value="NRML">NRML</option>
         </select>
       </div>
+      <div class="field"><label>Expiry</label>
+        <select id="sch-expiry" oninput="this._touched=true"
+                style="font-family:var(--mono);font-size:15px;background:var(--bg);border:1px solid var(--border-dim);border-radius:4px;padding:8px 12px;color:var(--text);width:100%;outline:none">
+          <option value="next_weekly">Next weekly (default)</option>
+          <option value="current_weekly">Current weekly</option>
+          <option value="current_monthly">Current monthly</option>
+          <option value="next_monthly">Next monthly</option>
+        </select>
+        <span id="sch-expiry-resolved" style="color:var(--dim);font-size:10px;margin-top:4px;display:block">— loading actual date —</span>
+      </div>
     `;
     el.dataset.rendered = '1';
+    // Populate the resolved-date labels from /expiry-options so user sees
+    // the actual date their policy resolves to (e.g. 'Tue 17 Jun 2026').
+    fetch('/expiry-options').then(r => r.json()).then(d => {
+      if (!d.ok) return;
+      const sel = document.getElementById('sch-expiry');
+      const dateMap = {};
+      (d.options || []).forEach(o => {
+        dateMap[o.value] = o.label;
+        const opt = sel.querySelector(`option[value="${o.value}"]`);
+        if (opt) opt.textContent = `${opt.textContent.split(' — ')[0]} — ${o.label}`;
+      });
+      window._schExpiryDateMap = dateMap;
+      _schUpdateResolvedHint();
+    }).catch(()=>{});
+    const expSel = document.getElementById('sch-expiry');
+    if (expSel) expSel.addEventListener('change', _schUpdateResolvedHint);
+  }
+
+  function _schUpdateResolvedHint() {
+    const sel  = document.getElementById('sch-expiry');
+    const hint = document.getElementById('sch-expiry-resolved');
+    if (!sel || !hint) return;
+    const m = window._schExpiryDateMap || {};
+    hint.textContent = m[sel.value] ? `Resolves to: ${m[sel.value]}` : '';
   }
 
   function _schClearTouched() {
-    ['sch-ae-chk','sch-time','sch-qty','sch-product',
+    ['sch-ae-chk','sch-time','sch-qty','sch-product','sch-expiry',
      'sch-target','sch-sl','sch-trail-chk','sch-trail-activate','sch-trail-by']
       .forEach(id => { const e=document.getElementById(id); if(e) e._touched=false; });
   }
@@ -4015,6 +4113,8 @@
     setVal('sch-time',    s.auto_entry_time    || '10:00');
     setVal('sch-qty',     s.auto_entry_qty     || 65);
     setVal('sch-product', s.auto_entry_product || 'MIS');
+    setVal('sch-expiry',  s.auto_entry_expiry  || 'next_weekly');
+    _schUpdateResolvedHint();
 
     // ── P&L Targets (prominent) ────
     const tgt = document.getElementById('sch-target');
@@ -4298,9 +4398,10 @@
         auto_entry_time:    document.getElementById('sch-time').value || '10:00',
         auto_entry_qty:     parseInt(document.getElementById('sch-qty').value) || 65,
         auto_entry_product: document.getElementById('sch-product').value || 'MIS',
+        auto_entry_expiry:  document.getElementById('sch-expiry').value || 'next_weekly',
       })
     });
-    ['sch-ae-chk','sch-time','sch-qty','sch-product'].forEach(id => {
+    ['sch-ae-chk','sch-time','sch-qty','sch-product','sch-expiry'].forEach(id => {
       const e = document.getElementById(id); if (e) e._touched = false;
     });
     const btn = document.querySelector('#view-scheduled button[onclick="schSaveSettings()"]');

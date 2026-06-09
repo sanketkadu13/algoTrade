@@ -90,6 +90,10 @@ def _make_strategy(name: str, sid: str, type_: str = "custom") -> dict:
         "auto_entry_product":     "MIS",
         "auto_entry_last_fired":  None,   # runtime — YYYY-MM-DD (IST)
         "auto_entry_status":      "idle", # runtime — idle | firing | done | failed:<msg>
+        # Expiry policy resolved at fire time. Default to next-week so the
+        # scheduled flow uses weeklies — users can change to current_weekly,
+        # current_monthly, or next_monthly per strategy.
+        "auto_entry_expiry":      "next_weekly",
     }
 
 _CONFIG_FILE = os.path.join(DATA_DIR, "strategies.json")
@@ -160,6 +164,7 @@ def _save_config():
                 "auto_entry_time":     s.get("auto_entry_time", "10:00"),
                 "auto_entry_qty":      s.get("auto_entry_qty", 65),
                 "auto_entry_product":  s.get("auto_entry_product", "MIS"),
+                "auto_entry_expiry":   s.get("auto_entry_expiry", "next_weekly"),
                 # Persisted runtime flags — fix the restart-loses-state bug.
                 # `running` lets the startup code resume monitor threads.
                 # `auto_entry_last_fired` keeps the scheduler from firing
@@ -217,7 +222,7 @@ _CONFIG_FIELDS = ("name", "type", "selected", "profit_target", "loss_limit",
                   "profit_target_basis",   "loss_limit_basis",
                   "trail_enabled", "trail_activate_at", "trail_by",
                   "auto_entry_enabled", "auto_entry_time", "auto_entry_qty",
-                  "auto_entry_product",
+                  "auto_entry_product",   "auto_entry_expiry",
                   # Persisted runtime flags (see _save_config notes)
                   "auto_entry_last_fired")
 
@@ -816,9 +821,65 @@ def _format_kite_expiry(d: date) -> str:
     """e.g. date(2026,5,26) → '26MAY'"""
     return f"{d.year % 100:02d}{_MONTH_ABBR[d.month - 1]}"
 
+def _is_monthly_expiry_of_its_month(d: date) -> bool:
+    """True if `d` is the NIFTY monthly expiry of its calendar month
+    (i.e. the last Tuesday of that month, shifted back for holidays).
+    Used to pick monthly vs weekly Kite symbol format."""
+    return d == _shift_to_trading_day(_last_tuesday_of_month(d.year, d.month))
+
+# NSE/Kite weekly option symbol: month encoded as single char.
+# Jan-Sep: "1"-"9"; Oct: "O"; Nov: "N"; Dec: "D".
+_WEEKLY_MONTH_CHAR = {1:"1",2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",
+                      10:"O",11:"N",12:"D"}
+
 def _nifty_option_symbol(strike: int, opt_type: str, expiry: date) -> str:
-    """NIFTY26MAY23500CE"""
-    return f"NIFTY{_format_kite_expiry(expiry)}{strike}{opt_type}"
+    """Build the Kite tradingsymbol for a NIFTY option. Picks the right
+    Kite format based on whether `expiry` is the monthly expiry of its
+    month (e.g. NIFTY26JUN23500CE) or a non-monthly weekly Tuesday
+    (e.g. NIFTY2661723500CE for 17 Jun 2026)."""
+    if _is_monthly_expiry_of_its_month(expiry):
+        return f"NIFTY{_format_kite_expiry(expiry)}{strike}{opt_type}"
+    mc = _WEEKLY_MONTH_CHAR[expiry.month]
+    return f"NIFTY{expiry.year % 100:02d}{mc}{expiry.day:02d}{strike}{opt_type}"
+
+def _current_weekly_expiry(today: date | None = None) -> date:
+    """Nearest weekly NIFTY expiry (Tuesday). If today IS a Tuesday and
+    trading is open, returns today; otherwise the upcoming Tuesday.
+    Holidays shift the date back to the most recent trading day."""
+    today = today or _now_ist().date()
+    days_to_tue = (1 - today.weekday()) % 7   # Mon=0, Tue=1
+    exp = today + timedelta(days=days_to_tue)
+    return _shift_to_trading_day(exp)
+
+def _next_weekly_expiry(today: date | None = None) -> date:
+    """The weekly expiry AFTER the current one — i.e. next Tuesday."""
+    today = today or _now_ist().date()
+    cur = _current_weekly_expiry(today)
+    return _shift_to_trading_day(cur + timedelta(days=7))
+
+def _next_monthly_expiry(today: date | None = None) -> date:
+    """The monthly expiry AFTER the current one."""
+    today = today or _now_ist().date()
+    cur = _current_monthly_expiry(today)
+    nxt = cur + timedelta(days=1)
+    if nxt.month == 12 + 1:
+        nxt = nxt.replace(year=nxt.year + 1, month=1)
+    return _shift_to_trading_day(_last_tuesday_of_month(nxt.year, nxt.month))
+
+# Stored values for the per-strategy expiry choice. The auto-entry path
+# resolves the policy at fire time so saved strategies stay correct across
+# weeks (i.e. "next_weekly" always means "next week from today", not a
+# frozen date from when the user saved the config).
+_EXPIRY_CHOICES = ("current_weekly", "next_weekly", "current_monthly", "next_monthly")
+
+def _resolve_expiry_choice(choice: str, today: date | None = None) -> date:
+    """Resolve an expiry-policy string to an actual date.
+    Falls back to next_weekly on unknown / missing values."""
+    today = today or _now_ist().date()
+    if choice == "current_weekly":  return _current_weekly_expiry(today)
+    if choice == "current_monthly": return _current_monthly_expiry(today)
+    if choice == "next_monthly":    return _next_monthly_expiry(today)
+    return _next_weekly_expiry(today)   # default
 
 def _get_prev_day_nifty_range() -> tuple[float, float]:
     """Previous trading day's high and low for NIFTY 50 spot via historical_data."""
@@ -922,6 +983,7 @@ def _do_auto_entry(sid: str) -> dict:
             return {"ok": False, "msg": "Already monitoring; stop first"}
         qty     = int(s.get("auto_entry_qty", 65))
         product = s.get("auto_entry_product", "MIS")
+        choice  = s.get("auto_entry_expiry", "next_weekly")
         name    = s["name"]
         s["auto_entry_status"] = "firing"
     broadcast()
@@ -976,12 +1038,15 @@ def _do_auto_entry(sid: str) -> dict:
         return {"ok": False, "msg": str(e)}
 
     ce_strike, pe_strike = _compute_strangle_strikes(high, low)
-    expiry = _current_monthly_expiry(today_ist)
+    # Expiry honors the per-strategy choice. The policy is resolved at fire
+    # time so 'next_weekly' always means 'next week from today', not a frozen
+    # date saved weeks ago.
+    expiry = _resolve_expiry_choice(choice, today_ist)
     ce_sym = _nifty_option_symbol(ce_strike, "CE", expiry)
     pe_sym = _nifty_option_symbol(pe_strike, "PE", expiry)
 
     _log(sid, f"Prev day H={high:.2f} L={low:.2f} → CE {ce_strike} | PE {pe_strike}")
-    _log(sid, f"Expiry {expiry.isoformat()} | qty={qty} | product={product}")
+    _log(sid, f"Expiry {expiry.isoformat()} ({choice}) | qty={qty} | product={product}")
     _log(sid, f"Symbols: {ce_sym}, {pe_sym}")
 
     legs = [(ce_sym, "NFO"), (pe_sym, "NFO")]
@@ -2311,9 +2376,33 @@ def update_auto_entry(sid: str):
             s["auto_entry_qty"] = int(data["auto_entry_qty"])
         if "auto_entry_product" in data:
             s["auto_entry_product"] = str(data["auto_entry_product"]).upper()
+        if "auto_entry_expiry" in data:
+            v = str(data["auto_entry_expiry"]).strip()
+            if v in _EXPIRY_CHOICES:
+                s["auto_entry_expiry"] = v
+            else:
+                return jsonify({"ok": False,
+                                "msg": f"auto_entry_expiry must be one of {list(_EXPIRY_CHOICES)}"}), 400
     _save_config()
     broadcast()
     return jsonify({"ok": True})
+
+# Resolved expiry preview — used by the Scheduled tab to show the user the
+# actual date their selected policy will fire against, recomputed in IST so
+# it doesn't drift across days.
+@app.route("/expiry-options", methods=["GET"])
+def expiry_options_route():
+    today = _now_ist().date()
+    out = []
+    for c in _EXPIRY_CHOICES:
+        d = _resolve_expiry_choice(c, today)
+        out.append({
+            "value":    c,
+            "date":     d.isoformat(),
+            "label":    d.strftime("%a %d %b %Y"),
+            "is_today": d == today,
+        })
+    return jsonify({"ok": True, "today": today.isoformat(), "options": out})
 
 @app.route("/trigger-entry/<sid>", methods=["POST"])
 def trigger_entry(sid: str):
@@ -2422,6 +2511,35 @@ def auth_auto_refresh():
     """One-click headless refresh using TOTP secret in .env."""
     ok, msg = _auto_refresh_token_via_totp()
     return jsonify({"ok": ok, "msg": msg, "last_refresh": _last_token_refresh})
+
+@app.route("/auth/status", methods=["GET"])
+def auth_status_route():
+    """Auto-refresh visibility: are creds set? when did it last fire?
+    when will it fire next? Used by the Settings tab to show users why
+    auto-refresh is or isn't working without them needing to read journals."""
+    required = ("KITE_USER_ID", "KITE_PASSWORD", "KITE_TOTP_SECRET", "API_SECRET")
+    missing  = [k for k in required if not os.getenv(k)]
+    # Compute next scheduled fire: today 08:30 IST if in the future, else
+    # the next trading day's 08:30. We don't actually re-schedule here, just
+    # report what the existing _token_refresh_scheduler will do.
+    now    = _now_ist()
+    today  = now.date()
+    target = now.replace(hour=8, minute=30, second=0, microsecond=0)
+    if now >= target or not _is_trading_day(today):
+        cand = today + timedelta(days=1)
+        while not _is_trading_day(cand):
+            cand = cand + timedelta(days=1)
+        next_run = datetime.combine(cand, dtime(8, 30))
+    else:
+        next_run = target
+    return jsonify({
+        "ok":               True,
+        "enabled":          not missing,           # auto-refresh runs iff all creds present
+        "missing":          missing,               # human-readable list of unset env vars
+        "last_refresh":     _last_token_refresh,
+        "next_scheduled":   next_run.isoformat(timespec="minutes") + " IST",
+        "scheduler_window": "08:30 IST on every trading day",
+    })
 
 @app.route("/auth/submit-token", methods=["POST"])
 def auth_submit_token():
@@ -2589,16 +2707,18 @@ def get_stats():
 
 @app.route("/preview-entry/<sid>", methods=["GET"])
 def preview_entry(sid: str):
-    """Dry-run: compute strikes/symbols without placing any orders."""
+    """Dry-run: compute strikes/symbols without placing any orders.
+    Honors the strategy's configured auto_entry_expiry choice."""
     if sid not in strategies:
         return jsonify({"ok": False, "msg": "Strategy not found"})
     try:
         today  = _now_ist().date()
-        expiry = _current_monthly_expiry(today)
+        s = strategies[sid]
+        choice = s.get("auto_entry_expiry", "next_weekly")
+        expiry = _resolve_expiry_choice(choice, today)
         is_exp = _is_monthly_expiry_day(today)
         high, low = _get_prev_day_nifty_range()
         ce_strike, pe_strike = _compute_strangle_strikes(high, low)
-        s = strategies[sid]
         return jsonify({
             "ok":         True,
             "expiry_day": is_exp,
@@ -4464,14 +4584,6 @@ _straddle_state: dict = {
 }
 _straddle_lock = threading.Lock()
 
-
-def _current_weekly_expiry(today: date | None = None) -> date:
-    """Nearest weekly Nifty expiry (Tuesday), shifted back if it's a holiday.
-    If today IS the expiry day and market is open, returns today."""
-    today = today or _now_ist().date()
-    days_to_tue = (1 - today.weekday()) % 7   # Mon=0, Tue=1
-    exp = today + timedelta(days=days_to_tue)
-    return _shift_to_trading_day(exp)
 
 def _straddle_log(event: str, **extra):
     """Append to signals + persist to today's CSV."""

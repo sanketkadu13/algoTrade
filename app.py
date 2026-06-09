@@ -1876,38 +1876,48 @@ def favicon_legacy():
 def logout_route():
     """Sign out for HTTP Basic Auth — best-effort.
 
-    Browsers cache basic-auth credentials per realm and there's no API to
-    clear them. The closest we can get is responding with HTTP 401 and a
-    DIFFERENT realm string so the browser stops auto-resending the cached
-    creds for the original realm. Most browsers will then prompt again
-    on the next request to /.
+    Previously returned 401 with a rotated realm, which caused the browser
+    to pop its native auth dialog *over* this page — users saw a credentials
+    prompt and assumed sign-out was broken. Now returns 200 with a clean
+    page plus Clear-Site-Data so modern browsers actually clear their cache.
 
-    This route is allowed through nginx without auth (location bypass), so
-    Flask actually receives the request and renders this page.
+    Basic Auth has no programmatic logout — fully clearing the credential
+    cache still requires closing all tabs. The page makes that explicit and
+    offers a button that closes the tab via window.close() where allowed.
     """
-    # WWW-Authenticate header is latin-1 only — no em-dash. Plain hyphen.
-    realm = f"Kite Monitor - signed out {_now_ist().strftime('%H:%M:%S')}"
-    body = """
-    <!doctype html><html><head><meta charset="utf-8"><title>Signed out</title>
-    <style>
-      body { background: #0d1117; color: #e6edf3; font-family: "Comic Sans MS", cursive; margin: 0; padding: 60px 20px; text-align: center; }
-      .card { max-width: 480px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 30px; }
-      h1 { color: #3fb950; font-size: 22px; margin: 0 0 10px 0; }
-      p { color: #8b949e; font-size: 13px; line-height: 1.6; }
-      .hint { background: rgba(227,179,65,.08); border: 1px solid #e3b341; border-radius: 6px; padding: 12px; color: #e3b341; font-size: 12px; margin-top: 18px; }
-      a.btn { display: inline-block; margin-top: 18px; padding: 10px 22px; background: transparent; border: 1px solid #58a6ff; color: #58a6ff; border-radius: 4px; text-decoration: none; font-size: 13px; }
-    </style></head><body>
-      <div class="card">
-        <h1>✓ Signed out</h1>
-        <p>Your basic-auth credentials have been invalidated for this session.</p>
-        <div class="hint">⚠ Important: <strong>close all tabs of this site</strong> (or use a fresh incognito window) to fully clear cached credentials from your browser. Basic Auth doesn't have a programmatic logout — this is a browser limitation.</div>
-        <a href="/" class="btn">Sign in again</a>
-      </div>
-    </body></html>
-    """
-    resp = Response(body, status=401, mimetype="text/html")
-    resp.headers["WWW-Authenticate"] = f'Basic realm="{realm}"'
-    resp.headers["Cache-Control"]    = "no-store, no-cache, must-revalidate, max-age=0"
+    body = """<!doctype html>
+<html><head><meta charset="utf-8"><title>Signed out — Sniper Eagle</title>
+<style>
+  body { background:#0d1117;color:#e6edf3;font-family:"Comic Sans MS",cursive;margin:0;padding:60px 20px;text-align:center; }
+  .card { max-width:520px;margin:0 auto;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:30px; }
+  h1 { color:#3fb950;font-size:22px;margin:0 0 10px 0; }
+  p { color:#8b949e;font-size:13px;line-height:1.6; }
+  .hint { background:rgba(227,179,65,.08);border:1px solid #e3b341;border-radius:6px;padding:12px;color:#e3b341;font-size:12px;margin-top:18px;text-align:left; }
+  .btn { display:inline-block;margin:8px 4px 0;padding:10px 22px;background:transparent;border:1px solid #58a6ff;color:#58a6ff;border-radius:4px;text-decoration:none;font-size:13px;cursor:pointer;font-family:inherit; }
+  .btn.red { border-color:#f85149;color:#f85149; }
+  ol { color:#8b949e;font-size:12px;line-height:1.7;padding-left:20px;text-align:left; }
+</style></head><body>
+  <div class="card">
+    <h1>✓ Signed out</h1>
+    <p>Server-side session cleared. To fully sign out of this device:</p>
+    <div class="hint">
+      <strong>HTTP Basic Auth limitation:</strong> browsers cache credentials per-site until every tab of this site is closed. There is no programmatic logout for Basic Auth.
+      <ol>
+        <li>Close this tab AND every other tab pointing at this site.</li>
+        <li>Or use a private/incognito window — credentials don't persist there.</li>
+        <li>The next time you visit, your browser will ask for credentials again.</li>
+      </ol>
+    </div>
+    <button class="btn red" onclick="window.close();">Close this tab</button>
+    <a href="/" class="btn">Sign in again</a>
+  </div>
+</body></html>"""
+    resp = Response(body, status=200, mimetype="text/html")
+    # Clear-Site-Data is supported by Chromium-based browsers (Chrome, Edge,
+    # Brave) — it instructs them to clear cache + storage. Firefox ignores it.
+    # The 'executionContexts' value forces a clean reload context.
+    resp.headers["Clear-Site-Data"] = '"cache", "cookies", "storage", "executionContexts"'
+    resp.headers["Cache-Control"]   = "no-store, no-cache, must-revalidate, max-age=0"
     return resp
 
 
@@ -2190,13 +2200,20 @@ def set_strategy_type(sid: str):
 def delete_strategy(sid: str):
     if sid not in strategies:
         return jsonify({"ok": False, "msg": "Strategy not found"})
-    if len(strategies) <= 1:
-        return jsonify({"ok": False, "msg": "Cannot delete the last strategy"})
     if strategies[sid]["running"]:
         return jsonify({"ok": False, "msg": "Stop monitoring before deleting"})
     with _lock:
         del strategies[sid]
         strategy_order.remove(sid)
+        # If this was the last one, auto-create a fresh default so the UI is
+        # never left with zero tabs. The user can rename / re-bind it later.
+        # (Previously the route hard-blocked this case with 'Cannot delete the
+        # last strategy', which broke the scheduled-only deletion flow.)
+        if not strategies:
+            new_sid = _new_strategy("Strategy 1")
+            strategies[new_sid]["selected"]      = _default_selected()
+            strategies[new_sid]["profit_target"] = float(os.getenv("PROFIT_TARGET", "2500"))
+            strategies[new_sid]["loss_limit"]    = float(os.getenv("LOSS_LIMIT",    "2000"))
     _stop_events.pop(sid, None)
     _threads.pop(sid, None)
     _histories.pop(sid, None)

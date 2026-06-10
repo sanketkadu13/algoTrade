@@ -22,15 +22,10 @@ AWS, behind a password. No prior server experience assumed.
 
 ---
 
-## Step 0 — Push the code to GitHub (do this on your Windows PC)
-Your repo: `https://github.com/omkarc19/algotrading.git` (branch `main`).
-The redesign is already committed locally. Push it:
-```powershell
-cd "c:\Users\LENOVO\OneDrive\Desktop\yog op sell\algotrading"
-git push origin main
-```
-(If git asks you to sign in to GitHub, do so in the popup.)
-Your `.env` is **git-ignored**, so your keys are NOT uploaded — good.
+## Step 0 — Code is already on GitHub ✅
+The redesign lives at **`https://github.com/sanketkadu13/algoTrade.git`**, branch
+**`redesign`** — already pushed. Your `.env` is **git-ignored**, so your keys were
+NOT uploaded. Nothing to do here; the server clones it in Step 3.
 
 ---
 
@@ -67,8 +62,8 @@ Paste these one block at a time (right-click to paste in the browser SSH):
 ```bash
 sudo apt update
 cd ~
-git clone https://github.com/omkarc19/algotrading.git
-cd algotrading
+git clone -b redesign https://github.com/sanketkadu13/algoTrade.git
+cd algoTrade
 bash deploy/install.sh
 ```
 The first run installs packages, creates `/opt/kite`, copies files — then **stops
@@ -98,7 +93,7 @@ Save and exit nano: **Ctrl+O**, **Enter**, then **Ctrl+X**.
 ## Step 5 — Finish the install
 Run the installer again — this time it completes:
 ```bash
-cd ~/algotrading
+cd ~/algoTrade
 bash deploy/install.sh
 ```
 Partway through it asks you to **set a login password** (the username is `admin`).
@@ -163,7 +158,7 @@ Follow the prompts — it auto-configures HTTPS and renews itself. Then use
 | See live logs | `tail -f /var/log/kite-monitor.log` |
 | Service status | `sudo systemctl status kite-monitor` |
 | Restart app | `sudo systemctl restart kite-monitor` |
-| **Update to latest code** | `cd ~/algotrading && git pull && bash deploy/install.sh` |
+| **Update to latest code** | `cd ~/algoTrade && git pull && bash deploy/install.sh` |
 
 ---
 

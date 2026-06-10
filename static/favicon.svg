@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Yeske Trade">
+  <defs>
+    <linearGradient id="yt-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b2330"/>
+      <stop offset="1" stop-color="#0b0e14"/>
+    </linearGradient>
+    <linearGradient id="yt-up" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#16a34a"/>
+      <stop offset="1" stop-color="#22c55e"/>
+    </linearGradient>
+  </defs>
+
+  <!-- badge -->
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#yt-bg)" stroke="#2b3447" stroke-width="1.5"/>
+
+  <!-- ascending candlesticks -->
+  <g stroke-linecap="round">
+    <!-- down candle -->
+    <line x1="17" y1="33" x2="17" y2="51" stroke="#f87171" stroke-width="2.2"/>
+    <rect x="13.5" y="37" width="7" height="11" rx="2" fill="#f87171"/>
+    <!-- up candle -->
+    <line x1="30" y1="23" x2="30" y2="45" stroke="#22c55e" stroke-width="2.2"/>
+    <rect x="26.5" y="28" width="7" height="14" rx="2" fill="url(#yt-up)"/>
+    <!-- up candle higher -->
+    <line x1="43" y1="17" x2="43" y2="39" stroke="#22c55e" stroke-width="2.2"/>
+    <rect x="39.5" y="22" width="7" height="13" rx="2" fill="url(#yt-up)"/>
+  </g>
+
+  <!-- uptrend arrow (brand accent) -->
+  <path d="M14 45 L27 32 L34 38 L49 21" fill="none" stroke="#4f8cff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M41 21 L49 21 L49 29" fill="none" stroke="#4f8cff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

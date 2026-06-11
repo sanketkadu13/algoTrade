@@ -1,4 +1,4 @@
-/* Yeske Trade — application logic (vanilla JS, no build step) */
+/* YASHAM — application logic (vanilla JS, no build step) */
 
   // ── Daily token refresh (modal) ──────────────────────────────────────────────
   async function openAuthModal() {
@@ -172,7 +172,7 @@
   // tab number matches the hero card. For other views (Active/Owl/Straddle/
   // etc.), the title falls back to the sum across all running strategies.
   // Nothing running → title resets to the brand.
-  const _BASE_TITLE = 'Yeske Trade';
+  const _BASE_TITLE = 'YASHAM';
   function _updateTabTitle(d) {
     const strats = (d && d.strategies) || {};
     let val = null;     // the number we'll show in the title
@@ -292,7 +292,7 @@
     const hasScheduled = Object.values(strategies).some(s => (s.type || 'custom') === 'scheduled');
     const showNew = !(currentView === 'scheduled' && hasScheduled);
     const newBtn = showNew
-      ? `<div class="tab-sep"></div><button class="btn-new-tab" onclick="addTab()">+ New ${currentView==='scheduled'?'Scheduled':''}</button>`
+      ? `<div class="tab-sep"></div><button class="btn-new-tab" onclick="addTab()">+ New ${currentView==='scheduled'?'Share Genius auto':''}</button>`
       : '';
     strip.innerHTML = tabs + newBtn;
   }
@@ -333,7 +333,7 @@
     } catch(e) {}
     let resp;
     const newType = (currentView === 'scheduled') ? 'scheduled' : 'custom';
-    const defaultName = (newType === 'scheduled') ? 'Scheduled' : `Strategy ${n}`;
+    const defaultName = (newType === 'scheduled') ? 'Share Genius auto' : `Strategy ${n}`;
     if (tplName) {
       resp = await fetch('/strategies/from-template',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({template:tplName,name:`${tplName} ${n}`,type:newType})});
     } else {
@@ -1730,7 +1730,7 @@
   async function promoteCurrentToScheduled() {
     if (!currentTab) return;
     const s = lastData?.strategies?.[currentTab]; if (!s) return;
-    if (!confirm(`Promote "${s.name}" to the singleton Scheduled strategy?\n\nThis will:\n• Move it out of Custom view into Scheduled view\n• Replace any existing Scheduled strategy (if any)`)) return;
+    if (!confirm(`Promote "${s.name}" to the singleton Share Genius auto strategy?\n\nThis will:\n• Move it out of Custom view into Share Genius auto view\n• Replace any existing Share Genius auto strategy (if any)`)) return;
     const r = await fetch('/strategies/' + currentTab + '/set-type', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({type: 'scheduled'}),
@@ -1746,7 +1746,7 @@
       .filter(([sid, s]) => (s.type || 'custom') === 'custom');
     if (!custom.length) { alert('No Custom strategies to convert. Create one first or use "Create new".'); return; }
     const lines = custom.map(([sid, s], i) => `${i+1}. ${s.name} (${sid})`).join('\n');
-    const choice = prompt(`Convert which Custom strategy to Scheduled?\n\n${lines}\n\nEnter number:`);
+    const choice = prompt(`Convert which Custom strategy to Share Genius auto?\n\n${lines}\n\nEnter number:`);
     if (!choice || !/^\d+$/.test(choice.trim())) return;
     const idx = parseInt(choice.trim()) - 1;
     if (idx < 0 || idx >= custom.length) { alert('Invalid choice.'); return; }

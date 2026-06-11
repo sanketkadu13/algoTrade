@@ -4,10 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0d1117">
-  <meta name="description" content="Yeske Trade — a clean, fast algo trading platform for Zerodha Kite.">
-  <title>Yeske Trade — Algo Trading Platform</title>
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}?v=1">
-  <link rel="alternate icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}?v=6">
+  <meta name="description" content="YASHAM — a clean, fast algo trading platform for Zerodha Kite.">
+  <title>YASHAM — Algo Trading Platform</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='logo.png') }}?v=3">
   <script>
     // Apply saved theme synchronously to prevent flash
     (function(){
@@ -24,8 +23,8 @@
   <!-- ── Mobile top app bar (hidden on desktop) ─────────────────────────── -->
   <header class="appbar">
     <div class="appbar-brand">
-      <img class="appbar-logo" src="{{ url_for('static', filename='favicon.svg') }}?v=1" alt="">
-      <span class="appbar-title">Yeske <b>Trade</b></span>
+      <img class="appbar-logo" src="{{ url_for('static', filename='logo.png') }}?v=3" alt="">
+      <span class="appbar-title">YAS<b>HAM</b></span>
     </div>
     <div class="appbar-actions">
       <button onclick="openExportModal()" title="Export data" aria-label="Export data">📦</button>
@@ -38,14 +37,14 @@
   <!-- ── Sidebar (left rail on desktop · bottom tab-bar on mobile) ───────── -->
   <aside class="sidebar" id="sidebar">
     <div class="brand">
-      <img class="brand-icon" src="{{ url_for('static', filename='favicon.svg') }}?v=1" alt="Yeske Trade">
-      <div class="brand-wordmark"><span class="brand-a">YESKE</span> <span class="brand-b">TRADE</span></div>
+      <img class="brand-icon" src="{{ url_for('static', filename='logo.png') }}?v=3" alt="YASHAM">
+      <div class="brand-wordmark"><span class="brand-a">YAS</span><span class="brand-b">HAM</span></div>
       <div class="brand-tagline">Algo Trading Platform</div>
     </div>
 
     <nav class="view-toggle" aria-label="Primary">
       <button id="vt-strategies" class="vt-btn vt-active" onclick="switchView('strategies')"><span class="vt-ico">📊</span><span class="vt-lbl">Custom</span></button>
-      <button id="vt-scheduled"  class="vt-btn"           onclick="switchView('scheduled')"><span class="vt-ico">⏰</span><span class="vt-lbl">Scheduled</span></button>
+      <button id="vt-scheduled"  class="vt-btn"           onclick="switchView('scheduled')"><span class="vt-ico">⏰</span><span class="vt-lbl">Share Genius auto</span></button>
       <button id="vt-arb"        class="vt-btn"           onclick="switchView('arb')"><span class="vt-ico">⚖</span><span class="vt-lbl">Arb</span></button>
       <button id="vt-owl"        class="vt-btn"           onclick="switchView('owl')"><span class="vt-ico">🦉</span><span class="vt-lbl">Owl</span></button>
       <button id="vt-settings"   class="vt-btn"           onclick="switchView('settings')"><span class="vt-ico">⚙</span><span class="vt-lbl">Settings</span></button>
@@ -351,7 +350,7 @@
       <button class="btn-save" id="btn-ae-trigger" onclick="triggerEntryNow()" style="flex:1;border-color:var(--orange);color:var(--orange)">Trigger Now</button>
     </div>
     <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px">
-      <button class="btn-save" onclick="promoteCurrentToScheduled()" style="width:auto;padding:5px 12px;font-size:10px;border-color:var(--orange);color:var(--orange)" title="Make this the singleton Scheduled strategy and switch to Scheduled view">⇪ Promote to Scheduled</button>
+      <button class="btn-save" onclick="promoteCurrentToScheduled()" style="width:auto;padding:5px 12px;font-size:10px;border-color:var(--orange);color:var(--orange)" title="Make this the singleton Share Genius auto strategy and switch to that view">⇪ Promote to Share Genius auto</button>
       <button class="btn-save" onclick="saveAsTemplate()" style="width:auto;padding:5px 12px;font-size:10px;border-color:var(--border-dim);color:var(--dim)">💾 Save as template</button>
     </div>
     <div id="ae-status" style="font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:10px"></div>
@@ -375,7 +374,7 @@
   <!-- ── Scheduled view ─────────────────────────────────────────────────── -->
   <div id="view-scheduled" style="display:none">
     <header class="topbar">
-      <div class="status-pill"><span>⏰ SCHEDULED STRATEGY</span></div>
+      <div class="status-pill"><span>⏰ SHARE GENIUS AUTO</span></div>
       <div class="topbar-right">
         <div class="conn-indicator"><div class="conn-dot" id="sch-mon-dot"></div><span id="sch-mon-text">—</span></div>
       </div>
@@ -384,7 +383,7 @@
     <!-- Empty state -->
     <div class="panel" id="sch-empty" style="margin-top:0">
       <div style="text-align:center;padding:36px 20px">
-        <div style="font-family:var(--mono);font-size:14px;color:var(--muted);margin-bottom:6px">No scheduled strategy yet</div>
+        <div style="font-family:var(--mono);font-size:14px;color:var(--muted);margin-bottom:6px">No Share Genius auto strategy yet</div>
         <div style="font-family:var(--mono);font-size:11px;color:var(--dim);margin-bottom:18px">A scheduled strategy fires entry orders automatically at a configured time. Singleton — only one allowed.</div>
         <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
           <button class="btn-save" onclick="promptConvertToScheduled()" style="width:auto;padding:9px 18px;border-color:var(--orange);color:var(--orange)">⇪ Convert existing Custom</button>

@@ -959,3 +959,15 @@ body {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* ── YASHAM logo (wide banner image: emblem + wordmark) ──────────────── */
+.brand { align-items: center; }
+.brand-icon {                       /* sidebar: full-width banner, natural ratio */
+  width: 100%; height: auto; max-height: 96px;
+  object-fit: contain; border-radius: 10px;
+}
+.brand-wordmark { display: none; }  /* logo image already contains the name */
+.appbar-logo {                      /* mobile top bar: small, undistorted */
+  height: 30px; width: auto; max-width: 96px;
+  object-fit: contain; border-radius: 6px;
+}

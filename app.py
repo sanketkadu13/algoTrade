@@ -1951,7 +1951,7 @@ def logout_route():
     offers a button that closes the tab via window.close() where allowed.
     """
     body = """<!doctype html>
-<html><head><meta charset="utf-8"><title>Signed out — Yeske Trade</title>
+<html><head><meta charset="utf-8"><title>Signed out — YASHAM</title>
 <style>
   body { background:#0b0e14;color:#e8edf5;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;margin:0;padding:60px 20px;text-align:center; }
   .card { max-width:520px;margin:0 auto;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:30px; }

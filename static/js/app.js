@@ -374,8 +374,8 @@
   }
 
   // ── View toggle (Custom / Scheduled / Arb / Owl / Settings) ──────────
-  let currentView = 'strategies';
-  const _VIEWS = ['strategies','scheduled','arb','owl','settings'];
+  let currentView = 'scheduled';
+  const _VIEWS = ['scheduled','owl','journal','settings'];
   function switchView(v) {
     currentView = v;
     _VIEWS.forEach(function (name) {
@@ -385,15 +385,16 @@
       if (btn) btn.classList.toggle('vt-active', name === v);
     });
     if (lastData && lastData.strategies) renderTabs(lastData.strategies, lastData.strategy_order || []);
-    if (v === 'arb') { loadArbConfig(); loadArbSnapshot(); loadArbPositions(); }
     if (v === 'scheduled') {
       _schClearTouched();
       var pv = document.getElementById('sch-preview');
       if (pv) { pv.style.display = 'none'; pv.innerHTML = ''; }
       renderScheduledView();
+      loadKiteStatus();
     }
     if (v === 'settings') loadSettings();
     if (v === 'owl') loadOwl();
+    if (v === 'journal') loadJournal();
     if (typeof lastData !== 'undefined' && lastData) _updateTabTitle(lastData);
     if (typeof closeMobileNav === 'function') closeMobileNav();
   }
@@ -846,294 +847,6 @@
 
 
 
-  // ── Arb Monitor ──────────────────────────────────────────────────────────
-  async function loadArbConfig() {
-    try {
-      const d = await (await fetch('/arb/config')).json();
-      if (!d.ok) return;
-      const c = d.config;
-      const el = id => document.getElementById(id);
-
-      // Populate underlying dropdown from server (so new entries auto-appear)
-      const sel = el('arb-underlying');
-      if (!sel._touched && d.underlyings) {
-        const cur = sel.value || c.underlying || 'NIFTY';
-        sel.innerHTML = d.underlyings.map(u =>
-          `<option value="${u.key}">${u.label} (lot ${u.lot_size}, step ${u.strike_step}, ${u.exchange})</option>`
-        ).join('');
-        sel.value = cur;
-      }
-
-      if (!sel._touched)                  sel.value                  = c.underlying || 'NIFTY';
-      if (!el('arb-strikes')._touched)    el('arb-strikes').value    = c.strikes_around_atm || 3;
-      if (!el('arb-alert')._touched)      el('arb-alert').value      = c.alert_pts || 3;
-      setArbMonitorButton(c.monitor_active);
-    } catch (e) {}
-  }
-
-  function setArbMonitorButton(active) {
-    const btn = document.getElementById('arb-start-btn');
-    const dot = document.getElementById('arb-mon-dot');
-    const txt = document.getElementById('arb-mon-text');
-    if (active) {
-      btn.textContent = '⏹ Stop Monitor';
-      btn.style.borderColor = 'var(--red)';
-      btn.style.color = 'var(--red-hi)';
-      dot.className = 'conn-dot ok';
-      txt.textContent = 'MONITORING';
-    } else {
-      btn.textContent = '▶ Start Monitor';
-      btn.style.borderColor = 'var(--green)';
-      btn.style.color = 'var(--green-hi)';
-      dot.className = 'conn-dot';
-      txt.textContent = 'IDLE';
-    }
-  }
-
-  async function saveArbConfig() {
-    const payload = {
-      underlying:         document.getElementById('arb-underlying').value,
-      strikes_around_atm: parseInt(document.getElementById('arb-strikes').value) || 3,
-      alert_pts:          parseFloat(document.getElementById('arb-alert').value) || 3,
-    };
-    await fetch('/arb/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    ['arb-underlying','arb-strikes','arb-alert'].forEach(id => { const e=document.getElementById(id); if(e) e._touched=false; });
-    // Reset chart strike memory so it re-picks ATM for the new underlying
-    arbChartStrike = null;
-    if (arbChart) { arbChart.destroy(); arbChart = null; }
-    document.getElementById('arb-chart-panel').style.display = 'none';
-  }
-
-  async function toggleArbMonitor() {
-    const cur = (document.getElementById('arb-mon-text').textContent || '').toUpperCase();
-    const wantActive = cur !== 'MONITORING';
-    await fetch('/arb/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({monitor_active:wantActive})});
-    setArbMonitorButton(wantActive);
-    if (wantActive) setTimeout(loadArbSnapshot, 3500);
-  }
-
-  async function loadArbSnapshot() {
-    if (currentView !== 'arb') return;
-    try {
-      const d = await (await fetch('/arb/snapshot')).json();
-      if (!d.ok || !d.snapshot || !d.snapshot.ts) {
-        document.getElementById('arb-snap-panel').style.display = 'none';
-        document.getElementById('arb-table-panel').style.display = 'none';
-        return;
-      }
-      renderArbSnapshot(d.snapshot);
-    } catch (e) {}
-  }
-
-  function renderArbSnapshot(s) {
-    document.getElementById('arb-snap-panel').style.display = '';
-    document.getElementById('arb-table-panel').style.display = '';
-    const threshold = (s.config && typeof s.config.alert_pts === 'number') ? s.config.alert_pts : 3;
-    document.getElementById('arb-summary').innerHTML =
-      `<span style="color:var(--text)">${s.underlying}</span>` +
-      `  ·  Spot <span style="color:var(--text)">₹${s.spot.toLocaleString('en-IN')}</span>` +
-      `  ·  ATM <span style="color:var(--text)">${s.atm}</span>` +
-      `  ·  Expiry <span style="color:var(--text)">${s.expiry}</span>` +
-      `  ·  ${s.fut_sym} bid <span style="color:var(--text)">₹${s.fut_bid}</span>` +
-      ` / ask <span style="color:var(--text)">₹${s.fut_ask}</span>` +
-      `  ·  Lot ${s.lot_size}` +
-      `  ·  Round-trip cost <span style="color:var(--orange)">~${(s.cost_pts ?? 0).toFixed(2)} pts</span>` +
-      `  ·  Execute threshold <span style="color:var(--green-hi)">+${threshold.toFixed(2)} pts</span>` +
-      `  ·  <span style="color:var(--dim)">@ ${s.ts.slice(11,19)}</span>`;
-
-    // Keep chart-strike dropdown in sync with current snapshot's strikes
-    _arbChartUpdateStrikeOptions(s);
-
-    const lots = parseInt(document.getElementById('arb-lots').value) || 1;
-    const tbody = document.getElementById('arb-tbody');
-    const cls  = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
-    const fmt  = v => (v >= 0 ? '+' : '') + v.toFixed(2);
-
-    tbody.innerHTML = s.rows.map(r => {
-      const sellOk = r.net_sell_pts > threshold;
-      const buyOk  = r.net_buy_pts  > threshold;
-      const sellCls = sellOk ? 'profitable' : cls(r.net_sell_pts);
-      const buyCls  = buyOk  ? 'profitable' : cls(r.net_buy_pts);
-      return `<tr class="${r.is_atm?'atm-row':''}">
-        <td>${r.strike}${r.is_atm?' ★':''}</td>
-        <td>${r.ce_bid}</td><td>${r.ce_ask}</td>
-        <td>${r.pe_bid}</td><td>${r.pe_ask}</td>
-        <td class="fut-cell">${s.fut_bid}</td><td class="fut-cell">${s.fut_ask}</td>
-        <td>${r.synth_buy_at}</td><td>${r.synth_sell_at}</td>
-        <td class="${sellCls}">${fmt(r.net_sell_pts)}</td>
-        <td class="${buyCls}">${fmt(r.net_buy_pts)}</td>
-        <td style="white-space:nowrap">
-          <button class="btn-arb-exec ${sellOk?'go':''}" ${sellOk?'':'disabled'}
-                  onclick="${sellOk?`executeArb('${s.underlying}',${r.strike},'SELL_F_BUY_SYNTH',${lots})`:''}">Sell F</button>
-          <button class="btn-arb-exec ${buyOk?'go':''}" ${buyOk?'':'disabled'}
-                  onclick="${buyOk?`executeArb('${s.underlying}',${r.strike},'BUY_F_SELL_SYNTH',${lots})`:''}"
-                  style="margin-left:4px">Buy F</button>
-        </td>
-      </tr>`;
-    }).join('');
-  }
-
-  async function executeArb(underlying, strike, direction, lots) {
-    if (!confirm(`Execute arb? ${direction} on ${underlying} K=${strike}  ·  ${lots} lot(s)\n\nThis will fire 3 LIVE orders.`)) return;
-    const r = await fetch('/arb/execute', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({underlying, strike, direction, lots}),
-    });
-    const d = await r.json();
-    alert(d.ok ? 'Execution started — watch Telegram for result.' : ('Failed: ' + (d.msg || '?')));
-    setTimeout(loadArbPositions, 5000);
-  }
-
-  async function loadArbPositions() {
-    if (currentView !== 'arb') return;
-    try {
-      const d = await (await fetch('/arb/positions')).json();
-      if (!d.ok) return;
-      renderArbPositions(d.positions || []);
-    } catch (e) {}
-  }
-
-  function renderArbPositions(positions) {
-    const el = document.getElementById('arb-positions');
-    const open = positions.filter(p => p.status === 'open');
-    const closed = positions.filter(p => p.status !== 'open').slice(-5).reverse();
-    if (!open.length && !closed.length) {
-      el.innerHTML = '<div style="font-family:var(--mono);font-size:12px;color:var(--dim)">No positions yet.</div>';
-      return;
-    }
-    const fmt = v => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(2);
-    const renderOne = p => {
-      const cls = v => v == null ? '' : (v > 0 ? 'pos' : v < 0 ? 'neg' : '');
-      if (p.status === 'open') {
-        return `<div class="arb-pos-row">
-          <div><div class="label">${p.id} · ${p.underlying} K=${p.strike}</div><div class="value">${p.direction}</div></div>
-          <div><div class="label">Entry basis</div><div class="value">${fmt(p.entry_basis)} pts</div></div>
-          <div><div class="label">Current</div><div class="value ${cls(p.current_basis)}">${fmt(p.current_basis)} pts</div></div>
-          <div><div class="label">Unrealized</div><div class="value ${cls(p.unrealized_pts)}">${fmt(p.unrealized_pts)} pts · ₹${(p.unrealized_inr||0).toLocaleString('en-IN')}</div></div>
-          <div><button class="btn-arb-exec" style="border-color:var(--red);color:var(--red-hi)" onclick="unwindArb('${p.id}')">Unwind</button></div>
-        </div>`;
-      }
-      return `<div class="arb-pos-row" style="opacity:.6">
-        <div><div class="label">${p.id} · CLOSED</div><div class="value">${p.underlying} K=${p.strike}</div></div>
-        <div><div class="label">Entry</div><div class="value">${fmt(p.entry_basis)}</div></div>
-        <div><div class="label">Exit</div><div class="value">${fmt(p.exit_basis)}</div></div>
-        <div><div class="label">Realized</div><div class="value ${cls(p.realized_pts)}">${fmt(p.realized_pts)} pts · ₹${(p.realized_inr||0).toLocaleString('en-IN')}</div></div>
-        <div></div>
-      </div>`;
-    };
-    el.innerHTML = [...open.map(renderOne), ...closed.map(renderOne)].join('');
-  }
-
-  async function unwindArb(aid) {
-    if (!confirm(`Unwind arb ${aid}? Squares off all 3 legs.`)) return;
-    const r = await fetch('/arb/unwind/' + aid, {method: 'POST'});
-    const d = await r.json();
-    alert(d.ok ? 'Unwind started — watch Telegram.' : ('Failed: ' + (d.msg || '?')));
-    setTimeout(loadArbPositions, 5000);
-  }
-
-  // ── Synthetic future chart ────────────────────────────────────────────────
-  let arbChart = null;
-  let arbChartStrike = null;
-
-  function _arbChartUpdateStrikeOptions(snap) {
-    const sel = document.getElementById('arb-chart-strike');
-    if (!sel || !snap || !snap.rows) return;
-    const cur = sel.value || (snap.atm + '');
-    const opts = snap.rows.map(r => `<option value="${r.strike}">${r.strike}${r.is_atm?' (ATM)':''}</option>`).join('');
-    if (sel.innerHTML !== opts) sel.innerHTML = opts;
-    // Default to ATM on first render
-    if (!sel.value || !snap.rows.find(r => r.strike == sel.value)) {
-      sel.value = snap.atm;
-    } else {
-      sel.value = cur;
-    }
-    if (!arbChartStrike) arbChartStrike = sel.value;
-  }
-
-  function onArbChartStrikeChange() {
-    arbChartStrike = document.getElementById('arb-chart-strike').value;
-    refreshArbChart();
-  }
-
-  async function refreshArbChart() {
-    if (currentView !== 'arb' || !arbChartStrike) return;
-    const u = document.getElementById('arb-underlying').value;
-    try {
-      const r = await fetch(`/arb/history?underlying=${u}&strike=${arbChartStrike}`);
-      const d = await r.json();
-      if (!d.ok) return;
-      renderArbChart(d.history || []);
-    } catch (e) {}
-  }
-
-  function renderArbChart(history) {
-    document.getElementById('arb-chart-panel').style.display = '';
-    const ctx = document.getElementById('arb-chart-canvas').getContext('2d');
-    if (arbChart) arbChart.destroy();
-
-    const labels = history.map(h => h.ts);
-    const spotData  = history.map(h => h.spot);
-    const synthData = history.map(h => h.synth);
-    const futData   = history.map(h => h.fut);
-
-    const latest = history[history.length - 1];
-    const statsEl = document.getElementById('arb-chart-stats');
-    if (latest) {
-      const basis = (latest.fut - latest.synth).toFixed(2);
-      const bClr  = basis > 0.5 ? 'var(--green-hi)' : basis < -0.5 ? 'var(--red-hi)' : 'var(--muted)';
-      statsEl.innerHTML =
-        `Spot <span style="color:var(--text)">₹${latest.spot}</span>  ·  ` +
-        `Synth <span style="color:var(--blue)">₹${latest.synth}</span>  ·  ` +
-        `Future <span style="color:var(--orange)">₹${latest.fut}</span>  ·  ` +
-        `Basis (F−Synth): <span style="color:${bClr};font-weight:700">${basis >= 0 ? '+' : ''}${basis}</span>`;
-    } else {
-      statsEl.textContent = 'Collecting data… start monitor and wait a few ticks';
-    }
-    if (!history.length) {
-      if (arbChart) arbChart.destroy();
-      return;
-    }
-
-    arbChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          {label:'Spot',      data: spotData,  borderColor: _cssVar('--green-hi'), borderWidth: 2,   pointRadius: 0, tension: 0.15, fill: false},
-          {label:'Synthetic', data: synthData, borderColor: _cssVar('--blue'),     borderWidth: 1.5, borderDash:[5,3], pointRadius: 0, tension: 0.15, fill: false},
-          {label:'Future',    data: futData,   borderColor: _cssVar('--orange'),   borderWidth: 1.5, borderDash:[3,3], pointRadius: 0, tension: 0.15, fill: false},
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false, animation: false,
-        interaction: {mode:'index', intersect:false},
-        plugins: {
-          legend: {
-            display: true, align: 'end', position: 'top',
-            labels: {color: _cssVar('--muted'), font:{family:"'Comic Sans MS','Comic Neue',cursive", size:11}, boxWidth: 18, boxHeight: 2, padding: 12}
-          },
-          tooltip: {
-            backgroundColor: _cssVar('--surface-2'),
-            borderColor: _cssVar('--border'), borderWidth: 1,
-            titleColor: _cssVar('--muted'), bodyColor: _cssVar('--text'),
-            titleFont:{family:"'Comic Sans MS','Comic Neue',cursive", size:11},
-            bodyFont:{family:"'Comic Sans MS','Comic Neue',cursive", size:12},
-            callbacks: {label: c => `  ${c.dataset.label}: ₹${c.raw}`}
-          }
-        },
-        scales: {
-          x: {ticks:{color: _cssVar('--dim'), font:{family:"'Comic Sans MS','Comic Neue',cursive", size:10}, maxTicksLimit:8, maxRotation:0}, grid:{color: _cssVar('--border-dim')}},
-          y: {ticks:{color: _cssVar('--dim'), font:{family:"'Comic Sans MS','Comic Neue',cursive", size:10}, callback: v=>'₹'+v.toLocaleString('en-IN')}, grid:{color: _cssVar('--border-dim')}}
-        }
-      }
-    });
-  }
-
-  // Arb polling while in arb view (snapshot every 3s, chart every 3s, positions every 5s)
-  setInterval(() => { if (currentView === 'arb') loadArbSnapshot(); }, 3000);
-  setInterval(() => { if (currentView === 'arb') refreshArbChart(); }, 3000);
-  setInterval(() => { if (currentView === 'arb') loadArbPositions(); }, 5000);
 
   // ── Export modal ─────────────────────────────────────────────────────────
   async function openExportModal() {
@@ -1259,12 +972,52 @@
       .forEach(id => { const e=document.getElementById(id); if(e) e._touched=false; });
   }
 
+  let _schAutoCreating = false;
+  async function _ensureScheduledStrategy() {
+    if (_schAutoCreating) return;
+    _schAutoCreating = true;
+    try {
+      await fetch('/strategies', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({name: 'Share Genius auto', type: 'scheduled'})});
+    } catch (e) {}
+    setTimeout(() => { _schAutoCreating = false; renderScheduledView(); }, 1500);
+  }
   function renderScheduledView() {
     const found = _findScheduledStrategy();
     document.getElementById('sch-empty').style.display   = found ? 'none' : '';
     document.getElementById('sch-content').style.display = found ? '' : 'none';
-    if (!found) return;
+    if (!found) { if (lastData) _ensureScheduledStrategy(); return; }
     const {sid, s} = found;
+
+    // ── P&L on top: live MTM while an order is open, else today's booked P&L
+    //    (booked stays on top until the next order starts or the day rolls over).
+    const _today    = _todayIso();
+    const todaySess = (s.sessions || []).filter(se => (se.end || '').slice(0,10) === _today);
+    const topEl  = document.getElementById('sch-booked');
+    const topNum = document.getElementById('sch-booked-num');
+    const topLbl = document.getElementById('sch-top-label');
+    const l1 = document.getElementById('sch-top-l1'), v1 = document.getElementById('sch-booked-count');
+    const l2 = document.getElementById('sch-top-l2'), v2 = document.getElementById('sch-booked-trigger');
+    if (s.running) {
+      const m = s.mtm || 0;
+      topLbl.textContent = 'Live MTM · Share Genius auto';
+      topNum.textContent = '₹ ' + m.toLocaleString('en-IN', {minimumFractionDigits:2, signDisplay:'always'});
+      topNum.className   = 'hero-num ' + (m >= 0 ? 'pos' : 'neg');
+      l1.textContent = 'Legs';   v1.textContent = (s.positions ? s.positions.length : 0);
+      l2.textContent = 'Status'; v2.textContent = '🟢 LIVE';
+      topEl.style.display = '';
+    } else if (todaySess.length) {
+      const booked = todaySess.reduce((a, se) => a + (se.final_mtm || 0), 0);
+      const lastTrig = todaySess[0].trigger || '—';
+      topLbl.textContent = "Booked P&L · today (till next order)";
+      topNum.textContent = '₹ ' + booked.toLocaleString('en-IN', {minimumFractionDigits:2, signDisplay:'always'});
+      topNum.className   = 'hero-num ' + (booked >= 0 ? 'pos' : 'neg');
+      l1.textContent = 'Trades today'; v1.textContent = todaySess.length;
+      l2.textContent = 'Last result';  v2.textContent = lastTrig.length > 28 ? lastTrig.slice(0,28) + '…' : lastTrig;
+      topEl.style.display = '';
+    } else {
+      topEl.style.display = 'none';
+    }
 
     // ── Status banner ────
     const dot = document.getElementById('sch-mon-dot');
@@ -1506,7 +1259,7 @@
           <div class="hero-divider"></div>
           <div class="hero-stat" style="${sDim}"><div class="hero-stat-label">Stop</div><div class="hero-stat-val">-₹${(s.loss_limit||0).toLocaleString('en-IN')}</div></div>
           <div class="hero-divider"></div>
-          <div class="hero-stat"><div class="hero-stat-label">Peak Today</div><div class="hero-stat-val pos">${s.peak_mtm_day!=null?'₹'+s.peak_mtm_day.toLocaleString('en-IN',{minimumFractionDigits:2}):'—'}</div></div>
+          <div class="hero-stat"><div class="hero-stat-label">Peak Today</div><div class="hero-stat-val ${s.peak_mtm_day!=null?(s.peak_mtm_day>=0?'pos':'neg'):''}">${s.peak_mtm_day!=null?'₹'+s.peak_mtm_day.toLocaleString('en-IN',{minimumFractionDigits:2}):'—'}</div></div>
         </div>
       </div>
       <div class="positions">${positions}</div>
@@ -1724,8 +1477,119 @@
     });
     const d = await r.json();
     if (!d.ok) alert('Failed: ' + (d.msg || '?'));
-    else { switchView('strategies'); }
+    else { switchView('scheduled'); }
   }
+
+  // ── Trade Journal (manual daily option-selling P&L log) ──────────────────
+  let _journalEntries = [];
+  function _jrNet(e) { return (e.profit_loss || 0) - (e.charges || 0); }
+  function _jrColor(v) { return v > 0 ? 'var(--green-hi)' : v < 0 ? 'var(--red-hi)' : 'var(--muted)'; }
+  function _jrNum(v) { return (v == null || v === '') ? '—' : Number(v).toLocaleString('en-IN', {minimumFractionDigits:2}); }
+
+  async function loadJournal() {
+    try {
+      const d = await (await fetch('/journal')).json();
+      if (!d.ok) return;
+      _journalEntries = d.entries || [];
+      renderJournal();
+      const dEl = document.getElementById('jr-f-date');
+      if (dEl && !dEl.value) dEl.value = _todayLocal();
+    } catch (e) { console.error('loadJournal', e); }
+  }
+
+  function renderJournal() {
+    const entries = _journalEntries.slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    let totalNet = 0, totalCharges = 0, wins = 0;
+    entries.forEach(e => { const n = _jrNet(e); totalNet += n; totalCharges += (e.charges || 0); if (n > 0) wins++; });
+    const acc = entries.length ? (wins / entries.length * 100) : 0;
+    const tot = document.getElementById('jr-total');
+    tot.textContent = '₹ ' + totalNet.toLocaleString('en-IN', {minimumFractionDigits:2, signDisplay:'always'});
+    tot.className = 'hero-num ' + (totalNet >= 0 ? 'pos' : 'neg');
+    document.getElementById('jr-count').textContent = entries.length;
+    document.getElementById('jr-acc').textContent = entries.length ? acc.toFixed(2) + '%' : '—';
+    document.getElementById('jr-charges').textContent = '₹ ' + totalCharges.toLocaleString('en-IN', {maximumFractionDigits:0});
+    document.getElementById('jr-body').innerHTML = entries.length ? entries.map(e => {
+      const net = _jrNet(e), pl = e.profit_loss || 0;
+      return `<tr>
+        <td style="text-align:left;color:var(--text)">${e.date || '—'}</td>
+        <td>${_jrNum(e.pe_premium)}</td>
+        <td>${_jrNum(e.pe_squareoff)}</td>
+        <td style="color:${_jrColor(e.pe_pnl || 0)}">${_jrNum(e.pe_pnl)}</td>
+        <td>${_jrNum(e.range_points)}</td>
+        <td>${_jrNum(e.strike_points)}</td>
+        <td style="color:${_jrColor(pl)};font-weight:700">${_jrNum(pl)}</td>
+        <td>${_jrNum(e.charges)}</td>
+        <td style="color:${_jrColor(net)};font-weight:700">${net.toLocaleString('en-IN', {minimumFractionDigits:2})}</td>
+        <td>${_jrNum(e.vix)}</td>
+        <td style="text-align:left;color:var(--muted);max-width:160px;white-space:normal">${escHtml(e.note || '')}</td>
+        <td><button onclick="deleteJournalEntry(${e.id})" title="Delete" style="background:none;border:0;color:var(--red-hi);cursor:pointer;font-size:15px">×</button></td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="12" style="text-align:center;color:var(--dim);padding:16px">No entries yet — add your daily P&L above (you can backfill past dates too).</td></tr>`;
+  }
+
+  async function addJournalEntry() {
+    const g = id => document.getElementById('jr-f-' + id).value;
+    const msg = document.getElementById('jr-form-msg');
+    const body = {
+      date: g('date'), pe_premium: g('pe_premium'), pe_squareoff: g('pe_squareoff'),
+      pe_pnl: g('pe_pnl'), range_points: g('range_points'), strike_points: g('strike_points'),
+      profit_loss: g('profit_loss'), charges: g('charges'), vix: g('vix'), note: g('note'),
+    };
+    if (!body.date) { msg.style.color = 'var(--red-hi)'; msg.textContent = 'Pick a date.'; return; }
+    try {
+      const d = await (await fetch('/journal', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})).json();
+      if (!d.ok) { msg.style.color = 'var(--red-hi)'; msg.textContent = d.error || 'Failed.'; return; }
+      msg.style.color = 'var(--green-hi)'; msg.textContent = 'Added ✓';
+      ['pe_premium','pe_squareoff','pe_pnl','range_points','strike_points','profit_loss','charges','vix','note']
+        .forEach(id => document.getElementById('jr-f-' + id).value = '');
+      loadJournal();
+    } catch (e) { msg.style.color = 'var(--red-hi)'; msg.textContent = 'Network error.'; }
+  }
+
+  async function deleteJournalEntry(id) {
+    if (!confirm('Delete this journal entry?')) return;
+    await fetch('/journal/' + id, {method:'DELETE'});
+    loadJournal();
+  }
+
+  function _todayLocal() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  // Pull today's Share Genius auto booked P&L into the journal form.
+  function fillJournalFromToday() {
+    const msg = document.getElementById('jr-form-msg');
+    document.getElementById('jr-f-date').value = _todayLocal();
+    const found = _findScheduledStrategy();
+    const todays = found ? (found.s.sessions || []).filter(se => (se.end || '').slice(0,10) === _todayIso()) : [];
+    if (!todays.length) { msg.style.color = 'var(--orange)'; msg.textContent = 'No booked Share Genius trade today yet — date set to today.'; return; }
+    const pnl = todays.reduce((a, se) => a + (se.final_mtm || 0), 0);
+    document.getElementById('jr-f-profit_loss').value = pnl.toFixed(2);
+    msg.style.color = 'var(--green-hi)';
+    msg.textContent = "Filled today's P&L (₹" + pnl.toFixed(2) + "). Add premium / VIX / charges, then Add entry.";
+  }
+
+  // ── Kite broker connection status (Share Genius header) ──────────────────
+  async function loadKiteStatus() {
+    const dot = document.getElementById('kite-dot');
+    const txt = document.getElementById('kite-text');
+    const box = document.getElementById('kite-conn');
+    if (!dot || !txt) return;
+    try {
+      const d = await (await fetch('/kite-status')).json();
+      if (d.connected) {
+        dot.className = 'conn-dot ok';
+        txt.textContent = 'Kite ✓ ' + (d.user || 'Connected');
+        if (box) box.title = 'Connected to Kite' + (d.user ? ' as ' + d.user : '');
+      } else {
+        dot.className = 'conn-dot bad';
+        txt.innerHTML = 'Kite ✕ <a href="#" onclick="event.preventDefault();openAuthModal()" style="color:var(--blue-hi);text-decoration:underline">connect</a>';
+        if (box) box.title = 'Not connected — click connect / Refresh Token';
+      }
+    } catch (e) { dot.className = 'conn-dot'; txt.textContent = 'Kite ?'; }
+  }
+  setInterval(() => { if (currentView === 'scheduled') loadKiteStatus(); }, 30000);
 
   async function promoteCurrentToScheduled() {
     if (!currentTab) return;
@@ -1839,6 +1703,7 @@
   // Refresh stats every 30s, health check on load
   setInterval(loadStats, 30000);
   document.addEventListener('DOMContentLoaded', () => {
+    switchView('scheduled');            // Custom removed — Share Genius auto is the home view
     setTimeout(loadStats, 1000);
     setTimeout(loadHealthCheck, 1200);
   });

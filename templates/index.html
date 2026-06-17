@@ -43,10 +43,9 @@
     </div>
 
     <nav class="view-toggle" aria-label="Primary">
-      <button id="vt-strategies" class="vt-btn vt-active" onclick="switchView('strategies')"><span class="vt-ico">📊</span><span class="vt-lbl">Custom</span></button>
-      <button id="vt-scheduled"  class="vt-btn"           onclick="switchView('scheduled')"><span class="vt-ico">⏰</span><span class="vt-lbl">Share Genius auto</span></button>
-      <button id="vt-arb"        class="vt-btn"           onclick="switchView('arb')"><span class="vt-ico">⚖</span><span class="vt-lbl">Arb</span></button>
+      <button id="vt-scheduled"  class="vt-btn vt-active" onclick="switchView('scheduled')"><span class="vt-ico">⏰</span><span class="vt-lbl">Share Genius auto</span></button>
       <button id="vt-owl"        class="vt-btn"           onclick="switchView('owl')"><span class="vt-ico">🦉</span><span class="vt-lbl">Owl</span></button>
+      <button id="vt-journal"    class="vt-btn"           onclick="switchView('journal')"><span class="vt-ico">📓</span><span class="vt-lbl">Journal</span></button>
       <button id="vt-settings"   class="vt-btn"           onclick="switchView('settings')"><span class="vt-ico">⚙</span><span class="vt-lbl">Settings</span></button>
     </nav>
 
@@ -163,7 +162,7 @@
 
   <main class="main">
 
-  <div id="view-strategies">
+  <div id="view-strategies" style="display:none">
 
   <!-- Topbar -->
   <header class="topbar">
@@ -376,24 +375,33 @@
     <header class="topbar">
       <div class="status-pill"><span>⏰ SHARE GENIUS AUTO</span></div>
       <div class="topbar-right">
+        <div class="conn-indicator" id="kite-conn" title="Kite broker connection"><div class="conn-dot" id="kite-dot"></div><span id="kite-text">Kite …</span></div>
         <div class="conn-indicator"><div class="conn-dot" id="sch-mon-dot"></div><span id="sch-mon-text">—</span></div>
       </div>
     </header>
 
-    <!-- Empty state -->
+    <!-- Empty state (auto-creates the strategy; shown only momentarily) -->
     <div class="panel" id="sch-empty" style="margin-top:0">
-      <div style="text-align:center;padding:36px 20px">
-        <div style="font-family:var(--mono);font-size:14px;color:var(--muted);margin-bottom:6px">No Share Genius auto strategy yet</div>
-        <div style="font-family:var(--mono);font-size:11px;color:var(--dim);margin-bottom:18px">A scheduled strategy fires entry orders automatically at a configured time. Singleton — only one allowed.</div>
-        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-          <button class="btn-save" onclick="promptConvertToScheduled()" style="width:auto;padding:9px 18px;border-color:var(--orange);color:var(--orange)">⇪ Convert existing Custom</button>
-          <button class="btn-save" onclick="addTab()" style="width:auto;padding:9px 18px;border-color:var(--green);color:var(--green-hi)">+ Create new</button>
-        </div>
+      <div style="text-align:center;padding:30px 20px">
+        <div style="font-size:14px;color:var(--muted);margin-bottom:6px">Setting up Share Genius auto…</div>
+        <div style="font-size:11px;color:var(--dim)">Configure entry time, qty, target &amp; SL below — it fires entry orders automatically at your set time.</div>
       </div>
     </div>
 
     <!-- Active scheduled strategy panels -->
     <div id="sch-content" style="display:none">
+      <!-- P&L on top — live MTM while an order is open, then booked P&L after exit
+           (stays until the next order starts or the day rolls over). -->
+      <div class="hero" id="sch-booked" style="margin-top:0;display:none">
+        <div class="hero-label" id="sch-top-label">P&amp;L · Share Genius auto</div>
+        <div class="hero-num" id="sch-booked-num">₹ 0.00</div>
+        <div class="hero-meta">
+          <div class="hero-stat"><div class="hero-stat-label" id="sch-top-l1">Trades today</div><div class="hero-stat-val" id="sch-booked-count">0</div></div>
+          <div class="hero-divider"></div>
+          <div class="hero-stat"><div class="hero-stat-label" id="sch-top-l2">Last result</div><div class="hero-stat-val" id="sch-booked-trigger">—</div></div>
+        </div>
+      </div>
+
       <!-- Status banner -->
       <div class="panel" id="sch-status" style="margin-top:0">
         <div class="panel-title">Today's Status</div>
@@ -490,92 +498,6 @@
       </details>
     </div>
   </div>
-
-  <!-- ── Arb Monitor view ───────────────────────────────────────────────── -->
-  <div id="view-arb" style="display:none">
-    <header class="topbar">
-      <div class="status-pill"><span>⚖ ARBITRAGE MONITOR</span></div>
-      <div class="topbar-right">
-        <div class="conn-indicator"><div class="conn-dot" id="arb-mon-dot"></div><span id="arb-mon-text">IDLE</span></div>
-      </div>
-    </header>
-
-    <!-- Arb config -->
-    <div class="panel" style="margin-top:0">
-      <div class="panel-title">Configuration</div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
-        <div class="field"><label>Underlying</label>
-          <select id="arb-underlying" oninput="this._touched=true"
-                  style="font-family:var(--mono);font-size:15px;background:var(--bg);border:1px solid var(--border-dim);border-radius:4px;padding:8px 12px;color:var(--text);width:100%;outline:none">
-            <!-- populated dynamically from /arb/config response -->
-          </select>
-        </div>
-        <div class="field"><label>Strikes ± ATM</label>
-          <input type="number" id="arb-strikes" min="1" max="10" value="3" oninput="this._touched=true">
-        </div>
-        <div class="field"><label>Alert threshold (pts)</label>
-          <input type="number" id="arb-alert" step="0.5" min="0" value="3" oninput="this._touched=true">
-        </div>
-        <div class="field"><label>Lots per execute</label>
-          <input type="number" id="arb-lots" min="1" value="1" oninput="this._touched=true">
-        </div>
-      </div>
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <button class="btn-save" onclick="saveArbConfig()" style="flex:1">Save Config</button>
-        <button class="btn-save" id="arb-start-btn" onclick="toggleArbMonitor()" style="flex:1;border-color:var(--green);color:var(--green-hi)">▶ Start Monitor</button>
-      </div>
-    </div>
-
-    <!-- Snapshot summary -->
-    <div class="panel" id="arb-snap-panel" style="margin-top:0;display:none">
-      <div class="panel-title">Snapshot</div>
-      <div id="arb-summary" style="font-family:var(--mono);font-size:13px;color:var(--muted);line-height:1.7"></div>
-    </div>
-
-    <!-- Basis table -->
-    <div class="panel" id="arb-table-panel" style="margin-top:0;display:none">
-      <div class="panel-title">Basis Table</div>
-      <div style="overflow-x:auto">
-        <table class="arb-table" id="arb-table">
-          <thead>
-            <tr>
-              <th>Strike</th>
-              <th>CE bid</th><th>CE ask</th>
-              <th>PE bid</th><th>PE ask</th>
-              <th>F bid</th><th>F ask</th>
-              <th>Synth buy</th><th>Synth sell</th>
-              <th>Net Sell F</th><th>Net Buy F</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="arb-tbody"></tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Synthetic Future analysis chart -->
-    <div class="panel" id="arb-chart-panel" style="margin-top:0;display:none">
-      <div class="panel-title">Synthetic Future Analysis</div>
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
-        <span style="font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)">Strike</span>
-        <select id="arb-chart-strike" onchange="onArbChartStrikeChange()"
-                style="font-family:var(--mono);font-size:13px;background:var(--bg);border:1px solid var(--border-dim);border-radius:4px;padding:5px 10px;color:var(--text);outline:none"></select>
-        <div id="arb-chart-stats" style="font-family:var(--mono);font-size:11px;color:var(--muted);flex:1;text-align:right"></div>
-      </div>
-      <div style="position:relative;height:340px"><canvas id="arb-chart-canvas"></canvas></div>
-      <div style="font-family:var(--mono);font-size:9px;color:var(--dim);margin-top:6px;letter-spacing:.06em">
-        SPOT (solid) · SYNTHETIC = K + CE_mid − PE_mid (dotted) · FUTURE mid (dotted) — basis = F − Synth
-      </div>
-    </div>
-
-    <!-- Open arb positions -->
-    <div class="panel" style="margin-top:0">
-      <div class="panel-title">Open Arb Positions</div>
-      <div id="arb-positions"><div style="font-family:var(--mono);font-size:12px;color:var(--dim)">No open positions.</div></div>
-    </div>
-  </div>
-
-  <!-- ═══════════════════════════════ AUCTIONS VIEW ════════════════════════════ -->
 
   <div id="view-owl" style="display:none">
 
@@ -699,6 +621,63 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- ═══════════════════════════════ JOURNAL VIEW ═════════════════════════════ -->
+  <!-- Manual daily option-selling P&L journal (columns mirror the user's Excel). -->
+  <div id="view-journal" style="display:none">
+    <header class="topbar">
+      <div class="status-pill"><span>📓 TRADE JOURNAL</span></div>
+    </header>
+
+    <!-- Summary -->
+    <div class="hero" style="margin-top:0">
+      <div class="hero-label">Net P&amp;L · all entries</div>
+      <div class="hero-num" id="jr-total">₹ 0.00</div>
+      <div class="hero-meta">
+        <div class="hero-stat"><div class="hero-stat-label">Entries</div><div class="hero-stat-val" id="jr-count">0</div></div>
+        <div class="hero-divider"></div>
+        <div class="hero-stat"><div class="hero-stat-label">Accuracy</div><div class="hero-stat-val" id="jr-acc">—</div></div>
+        <div class="hero-divider"></div>
+        <div class="hero-stat"><div class="hero-stat-label">Total charges</div><div class="hero-stat-val" id="jr-charges">₹ 0</div></div>
+      </div>
+    </div>
+
+    <!-- Add entry -->
+    <div class="panel" style="margin-top:12px">
+      <div class="panel-title">Add / backfill an entry</div>
+      <div class="jr-form">
+        <label>Date<input type="date" id="jr-f-date"></label>
+        <label>PE Premium Recd.<input type="number" step="any" id="jr-f-pe_premium"></label>
+        <label>PE Square Off<input type="number" step="any" id="jr-f-pe_squareoff"></label>
+        <label>PE PnL<input type="number" step="any" id="jr-f-pe_pnl"></label>
+        <label>Range Pts (Nifty)<input type="number" step="any" id="jr-f-range_points"></label>
+        <label>Strike Range Pts<input type="number" step="any" id="jr-f-strike_points"></label>
+        <label>Profit/Loss (gross)<input type="number" step="any" id="jr-f-profit_loss"></label>
+        <label>Charges<input type="number" step="any" id="jr-f-charges"></label>
+        <label>VIX India<input type="number" step="any" id="jr-f-vix"></label>
+        <label>Note<input type="text" id="jr-f-note" placeholder="e.g. Market opened gap up"></label>
+      </div>
+      <div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button class="btn-save" onclick="addJournalEntry()" style="width:auto;padding:9px 18px;border-color:var(--green);color:var(--green-hi)">+ Add entry</button>
+        <button class="btn-save" onclick="fillJournalFromToday()" style="width:auto;padding:9px 16px;border-color:var(--blue);color:var(--blue-hi)" title="Pull today's Share Genius auto booked P&amp;L into the form">↓ Use today's Share Genius trade</button>
+        <span style="font-size:11px;color:var(--dim)">Net P&amp;L = Profit/Loss − Charges (auto). Win = Net &gt; 0.</span>
+        <span id="jr-form-msg" style="font-size:12px;color:var(--green-hi)"></span>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="panel" style="margin-top:12px;overflow-x:auto">
+      <div class="panel-title">Journal</div>
+      <table class="arb-table" id="jr-table">
+        <thead><tr>
+          <th>Date</th><th>PE Premium</th><th>PE Sq.Off</th><th>PE PnL</th>
+          <th>Range Pts</th><th>Strike Pts</th><th>Profit/Loss</th><th>Charges</th>
+          <th>Net P&amp;L</th><th>VIX</th><th>Note</th><th></th>
+        </tr></thead>
+        <tbody id="jr-body"></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- ═══════════════════════════════ SETTINGS VIEW ═════════════════════════════ -->

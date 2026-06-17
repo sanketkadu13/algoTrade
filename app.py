@@ -562,6 +562,7 @@ def monitor_loop(sid: str):
         strategies[sid].update({
             "positions":           [{**t} for t in tracked],
             "peak_mtm":            None,
+            "peak_mtm_day":        None,   # reset per session so Peak is real, not yesterday's
             "trail_sl":            None,
             "monitoring_start_ts": datetime.now().isoformat(),
         })
@@ -2130,6 +2131,16 @@ def stream():
 def history(sid: str):
     with _history_lock:
         return jsonify({"points": list(_histories.get(sid, []))})
+
+@app.route("/kite-status")
+def kite_status():
+    """Lightweight check: is the live Kite session connected (valid token)?"""
+    try:
+        p = kite.profile()
+        return jsonify({"ok": True, "connected": True,
+                        "user": p.get("user_name") or p.get("user_id") or ""})
+    except Exception as e:
+        return jsonify({"ok": True, "connected": False, "error": str(e)[:120]})
 
 @app.route("/kite-positions")
 def kite_positions():
@@ -4845,6 +4856,62 @@ def calspread_force_setup_route(underlying: str):
         with _calspread_lock:
             err = _calspread_state[underlying].get("last_error")
         return jsonify({"ok": False, "error": err or "setup failed"}), 500
+    return jsonify({"ok": True})
+
+
+# ── Trade journal (manual daily P&L log — option-selling journal) ─────────────
+_JOURNAL_PATH = os.path.join(DATA_DIR, "data", "journal.json")
+_journal_lock = threading.Lock()
+
+_JOURNAL_FIELDS = ("pe_premium", "pe_squareoff", "pe_pnl", "range_points",
+                   "strike_points", "profit_loss", "charges", "vix")
+
+def _jf(v):
+    """Parse a numeric journal field; blank/invalid → None."""
+    try:
+        if v is None or str(v).strip() == "":
+            return None
+        return round(float(v), 2)
+    except Exception:
+        return None
+
+def _journal_load() -> list:
+    try:
+        with open(_JOURNAL_PATH) as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+def _journal_save(entries: list):
+    os.makedirs(os.path.dirname(_JOURNAL_PATH), exist_ok=True)
+    _atomic_json_dump(_JOURNAL_PATH, entries)
+
+@app.route("/journal", methods=["GET"])
+def journal_get():
+    with _journal_lock:
+        return jsonify({"ok": True, "entries": _journal_load()})
+
+@app.route("/journal", methods=["POST"])
+def journal_add():
+    d = request.json or {}
+    entry = {k: _jf(d.get(k)) for k in _JOURNAL_FIELDS}
+    entry["date"] = str(d.get("date") or "")[:10]
+    entry["note"] = str(d.get("note") or "")[:200]
+    if not entry["date"]:
+        return jsonify({"ok": False, "error": "date required"}), 400
+    with _journal_lock:
+        entries = _journal_load()
+        entry["id"] = (max([e.get("id", 0) for e in entries], default=0) + 1)
+        entries.append(entry)
+        _journal_save(entries)
+    return jsonify({"ok": True, "entry": entry})
+
+@app.route("/journal/<int:eid>", methods=["DELETE"])
+def journal_delete(eid: int):
+    with _journal_lock:
+        entries = [e for e in _journal_load() if e.get("id") != eid]
+        _journal_save(entries)
     return jsonify({"ok": True})
 
 

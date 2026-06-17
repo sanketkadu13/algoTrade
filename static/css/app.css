@@ -971,3 +971,10 @@ body {
   height: 30px; width: auto; max-width: 96px;
   object-fit: contain; border-radius: 6px;
 }
+
+/* ── Trade Journal form ──────────────────────────────────────────────── */
+.jr-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.jr-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.jr-form input { background: var(--bg); border: 1px solid var(--border-dim); border-radius: 6px; padding: 7px 9px; color: var(--text); font-size: 13px; outline: none; }
+.jr-form input:focus { border-color: var(--accent); }
+#jr-table th, #jr-table td { white-space: nowrap; }
